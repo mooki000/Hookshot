@@ -130,7 +130,7 @@ static void table_caps(void) {
 }
 
 static uint64_t mgr, holder, events, eholder, view, actor, map_value, map_text, prompt, music;
-static uint64_t test_flag, rupees, child, loading, rotation, bursts[40], escaped_text;
+static uint64_t test_flag, rupees, child, loading, rotation, bursts[40], escaped_text, resize_guard;
 static SRWLOCK map_lock = SRWLOCK_INIT;
 static char last_map[64];
 static int poll_held;
@@ -175,6 +175,7 @@ static void setup(void) {
     /* The second hash collides with the first at slot zero of the 16-slot bool table. */
     w8(flag(mgr, KIND_BOOL, 0x00000100u), 0);
     w8(flag(mgr, KIND_BOOL, 0x00000110u), 1);
+    resize_guard = flag(mgr, KIND_INT, 0x60000070u);   /* slot 112 before and after the 128 -> 256 resize */
     w32(flag(mgr, KIND_INT, STATE_LIFE), 12), w32(flag(mgr, KIND_INT, STATE_MAX_LIFE), 12);
     rupees = flag(mgr, KIND_INT, STATE_RUPEES);
     w32(rupees, 5);
@@ -208,6 +209,10 @@ static void resize_int_table(void) {
     const uint64_t box = mgr + state_kind[KIND_INT].at, table = r64(box + 24);
     uint32_t pairs[128][2];
     CHECK(r32(box + 36) == 128);
+    /* Other flags may rehash to different slots, which by itself suppresses their changes even if the resize
+       baseline is broken. Change one whose key stays in the same slot to make that regression observable. */
+    CHECK(r32(table + 112 * 8) == 0x60000070u);
+    w32(resize_guard, r32(resize_guard) + 1);
     memcpy(pairs, hos_guest_range(table, sizeof pairs), sizeof pairs);
     memset(hos_guest_range(table, 256 * 8), 0, 256 * 8);
     for (int i = 0; i < 128; i++) {
@@ -217,6 +222,7 @@ static void resize_int_table(void) {
         w32(table + slot * 8ull, pairs[i][0]), w32(table + slot * 8ull + 4, pairs[i][1]);
     }
     w32(box + 36, 256);
+    CHECK(r32(table + 112 * 8) == 0x60000070u);
 }
 int main(int argc, char **argv) {
     CHECK(argc == 2);
@@ -770,7 +776,12 @@ def socket_cases(fixture, module, address):
         # Worst allowed payload: 64 distinct 47-character keys, 63 six-byte escapes per value, the same escaped core
         # strings, 32 changed entries and a longest allowed request id. Parsing the actual line catches truncation.
         long_names = ["Test.Escaped.%034d" % i for i in range(64)]
-        long_id = "q" * 198   # quotes make the permitted 200 JSON bytes
+        # The existing bridge guard is b.n < 200, counting the JSON quotes, not the decoded string length.
+        fast.bridge.send({"id": "q" * 198, "cmd": "subscribe", "events": ["oot"]})
+        too_long = fast.bridge.line(5)
+        check(too_long is not None and too_long.get("id") is None and too_long.get("ok") is False and
+              too_long.get("error") == "bad_request", "a 200-byte JSON id passed the bridge's existing bound")
+        long_id = "q" * 197   # quotes make the longest accepted 199 JSON bytes
         fast.ask("subscribe", rid=long_id, events=["oot"], every=1, flags=long_names, changes=True)
         fixture.step("escape")
         fixture.step("sample 400")
@@ -788,7 +799,7 @@ def socket_cases(fixture, module, address):
         fast.ask("unsubscribe")
         fixture.step("expect_watches 0")
         fast.quiet()
-        print("PASS: 64 longest names, maximally escaped strings, changes and a 200-byte id form complete socket JSON")
+        print("PASS: 64 longest names, maximally escaped strings, changes and a 199-byte id form complete socket JSON")
 
 
 def main():
