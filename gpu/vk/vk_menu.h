@@ -78,6 +78,12 @@ struct Options {
     int volume = 100;     // (hookshot) the game's sound in percent, 0 to 100 (host/nn_audio.c: HOS_OPT_VOLUME, 27)
     int mute_background = 0;   // (hookshot) no sound while another window has the focus (host/nn_audio.c: HOS_OPT_MUTE_BACKGROUND, 28)
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
+    // (hookshot) the Co-op tab's Room rules page (HOS_OPT_COOP .. HOS_OPT_COOP_AMMO, 48 to 55): co-op on at the start
+    // (host/coop.c), and the rules of a room this game makes (host/oot_coop.c read_rules; host/coop_state.h's defaults):
+    // 0 per player, 1 shared, 2 one pool
+    int coop = 0;
+    int coop_progress = 1, coop_items = 1, coop_songs = 1, coop_quest = 1;   // (shared or per player)
+    int coop_keys = 2, coop_rupees = 0, coop_ammo = 0;                       // (one pool or per player)
 };
 extern Options opts;
 /// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
@@ -101,6 +107,7 @@ int menu_player_flight();
 int menu_free_camera();
 int menu_link_speed();   // (Movement speed in percent, 100 while the tools are off)
 int menu_take_cheat_action();
+int menu_coop_option(int id);   // (hookshot: the Room rules page's values, HOS_OPT_COOP to HOS_OPT_COOP_AMMO)
 void menu_note_frame(bool game_frame, int shown = 1);   // (the frame rates the FPS counter shows)
 /// The game's picture's size (the Output resolution, its crop) and the window's, at each present: the Window scaling filter
 /// row says when it is not needed

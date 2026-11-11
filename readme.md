@@ -327,6 +327,14 @@ HDR peak brightness show only while HDR is on.
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Controls | Opens the Controls page | |
 | | Menu shortcut | Insert or F1, F1 only | Insert or F1 |
+| Co-op | Your name | The name the others in the room see, up to 24 characters | `Player-` and four random digits |
+| | Relay | The relay's address, `host` or `host:port` (port 24680 when none is given): see [co-op](docs/coop.md) | None |
+| | Make a room | Makes a room on the relay and shows its secret, to give to the others | |
+| | Join a room | The secret the room's maker gave you, typed or pasted; Enter joins | |
+| | Room secret, Leave the room | In a room: its secret, hidden until Enter shows it; leaving it (press twice) | |
+| | Accept the room | While the room is offered: share progress with the players listed, after your save is copied (press twice; compare the key fingerprints first) | |
+| | Remove a player, Reset the pools | The room's maker only, once the room is accepted: drop the player chosen with Left and Right, or start the shared keys, rupees and ammunition again (press twice) | |
+| | Room rules | Outside a room, and in a room you made: opens the Room rules page, the rules of a room you make: Progress, Items, Songs, Quest items (Shared, Per player; Shared), Small keys (One pool, Per player; One pool), Rupees, Ammunition (One pool, Per player; Per player), and Co-op at start (Off, On; Off): see [co-op](docs/coop.md) | |
 
 - **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Profile
   and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as

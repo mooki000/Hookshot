@@ -6,10 +6,9 @@ own on a thread of its own.
 
 What exists so far: the relay (`scripts/coop_relay.py`), the wire format both ends speak (`host/coop_proto.c`: rooms
 named by a secret, the datagrams between a game and the relay, the sealed messages between the players), and the
-game's session (`host/coop.c`, `host/coop_net.c`): switched on in the settings, the game makes or joins a room at start
-and stays in it; and progress sync (`host/oot_coop.c`, [below](#progress-sync)): what one player's game gains, the
-others' games get. The menu's Co-op tab comes next: until then a room is made, joined and accepted with the switches
-below.
+game's session (`host/coop.c`, `host/coop_net.c`): the game makes or joins a room from the Insert menu's Co-op tab, or
+at start from its settings, and stays in it; and progress sync (`host/oot_coop.c`, [below](#progress-sync)): what one
+player's game gains, the others' games get.
 
 ## Running a relay
 
@@ -64,7 +63,7 @@ mean to join.
 Co-op is off unless switched on. Off, the game opens no socket and starts no thread (`coop_init` in
 `host/hos_main.c` returns at once). The settings are read once, when the game starts: `hookshot_options.ini` beside the
 game, and the environment over it (a variable that is set wins over the file's line; `hookshot_env.txt` can set them
-too, except the two marked "environment only"). The Insert menu's Co-op tab will change them while the game runs.
+too, except the two marked "environment only"). The Insert menu's Co-op tab (below) changes them while the game runs.
 
 | `hookshot_options.ini` | Environment | What it does | Default |
 |---|---|---|---|
@@ -72,7 +71,7 @@ too, except the two marked "environment only"). The Insert menu's Co-op tab will
 | `coop_name=` | `HOS_COOP_NAME` | the player's name in the room: at most 24 bytes of UTF-8 (a control or text-direction character, or a byte that is not UTF-8, shows as `?`) | `Player-` and four random hex digits, new at each start |
 | `coop_server=` | `HOS_COOP_SERVER` | the relay: `host`, `host:port`, `[IPv6]:port` or a bare IPv6 address | none (the players run one); port 24680 |
 | `coop_port=` | `HOS_COOP_PORT` | the game's own UDP port (one forwarded on the router, say) | 0: any free one |
-| | `HOS_COOP_AUTO=create\|join` with `HOS_COOP_ROOM=<secret>` (environment only) | make or join that room at start, and stay: a room the relay lost (a restart) is made again by its maker and waited for by the others. `create` without a room makes a new one. For tests and LAN parties until the tab exists | off |
+| | `HOS_COOP_AUTO=create\|join` with `HOS_COOP_ROOM=<secret>` (environment only) | make or join that room at start, and stay: a room the relay lost (a restart) is made again by its maker and waited for by the others. `create` without a room makes a new one. For tests; with `HOS_COOP_ROOM` alone, the tab's Make a room makes the room of that secret | off |
 | | `HOS_COOP_DROP=<percent>` | a test's loss: that share of the received datagrams is thrown away | 0 |
 | | `HOS_COOP_TRACE=1` | a log line for every datagram sent and received, and the relay's address | off |
 
@@ -87,6 +86,19 @@ window is ended by SIGTERM or SIGINT (`timeout`, a terminal's Ctrl+C), the game 
 relay (twice each, in under half a second), so the others see the player go at once rather than when the relay drops a
 silent member 15 s later. One host thread does all of it, as the Discord status's does; it never touches the game's
 memory.
+
+### The Co-op tab
+
+The Insert menu's last tab does the same from the game, with no setting written by hand. **Your name** and **Relay**
+are `coop_name` and `coop_server`. **Make a room** and **Join a room** (the secret typed or pasted) switch co-op on for
+this run and make or join the room. In a room the tab shows its state and the relay's round trip, the **Room secret**
+(masked until Enter shows it), and a line per player with the fingerprint of the key their game signed; **Accept the
+room** shows while the room waits for your acceptance (see "What joining a room means for your save"), **Leave the
+room** always. The game that holds the maker's key also gets **Remove a player** and **Reset the pools**, once it has
+accepted the room. **Room rules**, outside a room and for that game, opens a page with the rules of a room this game
+makes (`coop_progress` .. `coop_ammo`, see "What is shared") and **Co-op at start** (`coop`). Accept, the remedies and
+Leave take a second press. `HOS_COOP_DEMO=1` runs the tab on a made-up room, for screenshots: no session starts and
+nothing is sent.
 
 ## The log
 

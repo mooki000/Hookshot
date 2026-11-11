@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 16
+#define MKWVK_API_VERSION 17
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -35,6 +35,11 @@ enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DIS
 /* (HOS_OPT_DISABLE_CAMERA_CENTERING, 45: Controls' movement-follow yaw, host/mouse_native.c: 0 stock, 1 disabled;
    44 is reserved for HOS_OPT_SKIP_TITLE) */
 enum { HOS_OPT_DISABLE_CAMERA_CENTERING = 45 };
+/* (hookshot) the Co-op tab's Room rules page (the options file's coop and coop_progress .. coop_ammo, which host/coop.c
+   and host/oot_coop.c read by their keys): co-op on at the start, then a room's rules in host/coop_state.h's categories'
+   order, each 0 per player, 1 shared or 2 one pool (COOP_MODE_*). 46 and 47 are the Walk key's */
+enum { HOS_OPT_COOP = 48, HOS_OPT_COOP_PROGRESS, HOS_OPT_COOP_ITEMS, HOS_OPT_COOP_SONGS, HOS_OPT_COOP_QUEST,
+       HOS_OPT_COOP_KEYS, HOS_OPT_COOP_RUPEES, HOS_OPT_COOP_AMMO };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
@@ -72,6 +77,39 @@ typedef struct MkwVkPointer {
    asked (the clipboard's first line comes as typed) */
 enum { HOS_TEXT_KEY = 0x40000000 };
 enum { HOS_TEXT_OFF, HOS_TEXT_ON, HOS_TEXT_PASTE };
+
+/* (hookshot, version 17) the Insert menu's Co-op tab (MkwVkHost.coop_view and coop_command, host/coop_menu.c): the room as
+   the tab shows it. state: host/coop.h's CoopState, in order. A member's key is its identity key's fingerprint
+   (xxxx-xxxx-xxxx-xxxx, "" until it is known) and accepted whether this player accepted it; offer is the number of the room's
+   offer to accept (0: none, or it waits for unidentified members), accepted whether it was; remedies 1 when this game holds
+   the key the room's rules are signed with (the maker's: it may remove a player or reset the pools). version changes with
+   anything in the view */
+enum { HOS_COOP_STATE_OFF, HOS_COOP_STATE_LEFT, HOS_COOP_STATE_CONNECTING, HOS_COOP_STATE_JOINED, HOS_COOP_STATE_RECONNECTING };
+enum { HOS_COOP_MEMBERS = 8 };
+typedef struct MkwVkCoopMember {
+    int32_t id;   /* 1 to 8 */
+    uint8_t self, maker, away, accepted;
+    char name[32], key[24];
+} MkwVkCoopMember;
+typedef struct MkwVkCoopView {
+    uint32_t version;
+    int32_t state;
+    char code[24];      /* the room's secret, XXXXXX-XXXXXX-XXXXXX; "" outside a room */
+    char name[32];      /* this player's name as the room has it */
+    char status[96];    /* what is going on or what went wrong, in words */
+    uint32_t ping_ms;   /* the round trip to the relay; 0 not measured */
+    int32_t n;          /* members, this player included */
+    MkwVkCoopMember member[HOS_COOP_MEMBERS];
+    uint32_t offer;
+    int32_t accepted, unidentified;
+    int32_t remedies;
+} MkwVkCoopView;
+/* what the tab asks (coop_command's cmd): make a room, join one (text: its secret as typed), leave it, accept the offer
+   (number: its offer), the player's name and the relay ("host[:port]") as the fields set them (text; number 1: the field's
+   Enter, applied at once to a session that runs, 0: the saved value at the start, kept for the next Make or Join); the
+   maker's remedies: remove the player of that key (text: its fingerprint), reset the pools */
+enum { HOS_COOP_CMD_MAKE = 1, HOS_COOP_CMD_JOIN, HOS_COOP_CMD_LEAVE, HOS_COOP_CMD_ACCEPT, HOS_COOP_CMD_NAME, HOS_COOP_CMD_SERVER,
+       HOS_COOP_CMD_REMOVE, HOS_COOP_CMD_RESET_POOLS };
 
 /* what the executable gives the back end */
 typedef struct MkwVkHost {
@@ -165,6 +203,11 @@ typedef struct MkwVkHost {
        max, in order (characters and HOS_TEXT_KEY editing keys, repeats included; Ctrl+V and Shift+Insert paste): the count.
        host/display.c (WM_CHAR, WM_KEYDOWN) and host/posix/display_sdl.c (SDL's text input and key events) put them in */
     int (*take_text)(int focus, uint32_t *out, int max);
+    /* (hookshot, version 17) the Co-op tab (host/coop_menu.c; the types above): the room as it is now, and what the tab asks,
+       from the menu's thread. coop_command: 1 when taken, 0 when not (a secret that is not one, a relay that is not host or
+       host:port, an offer that is not the current one, co-op that could not start) */
+    void (*coop_view)(MkwVkCoopView *out);
+    int (*coop_command)(int cmd, const char *text, uint32_t number);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */
