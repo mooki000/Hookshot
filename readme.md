@@ -293,7 +293,8 @@ HDR peak brightness show only while HDR is on.
 | | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS, Uncapped (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
-| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880 (after a restart) | 2048x1152 |
+| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880, your own size (after a restart) | 2048x1152 |
+| | Custom output size | A size of your own, typed as `<width>x<height>` (after a restart) | None |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below), Off (no upscaling) | Game's own |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K) |
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native. With Off: Auto, 100%, 75%, 67%, 50%, 33% | Auto |
@@ -363,9 +364,11 @@ HDR peak brightness show only while HDR is on.
   3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. On a 5120x1440 (32:9) ultrawide
   monitor, 5120x1440 gives a native frame with a sharp HUD. Set **Ultrawide** to Monitor's shape with it: it widens the
   cameras to the frame's shape and keeps the HUD and movies in the middle 16:9; without it, the game's 16:9 picture is
-  stretched across the 32:9 output, sharp but wide. For a size the menu does not offer (3440x1440, 2560x1080, ...), set
-  `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
-  pixels, and between 5:4 and 48:9 in shape; anything else uses the game's 2048x1152. The menu then offers it as its own
+  stretched across the 32:9 output, sharp but wide. For a size the menu does not offer (3440x1440, 2560x1080, ...), type
+  it in **Custom output size** (Enter or A to edit it, Enter or A again to set it, Esc or B to leave it as it was; Ctrl+V
+  pastes), or set `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at
+  most 5120x2880's pixels, and between 5:4 and 48:9 in shape. The menu says why it refuses a size; in the file, anything
+  else uses the game's 2048x1152. The Output resolution row then offers it as its own
   choice. With **Ultrawide** on, a picture wider than 16:9 is kept to 3840x2160's pixels, so above that a wide size is not a
   native frame. A custom output wider than 32:9 also sets the camera shape, even when the OS reports a single
   16:9 primary monitor. For three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display

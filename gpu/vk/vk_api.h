@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 15
+#define MKWVK_API_VERSION 16
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -65,6 +65,13 @@ typedef struct MkwVkPointer {
     uint32_t held, pressed;
     int32_t wheel;
 } MkwVkPointer;
+
+/* (hookshot, version 16) typed text for the Insert menu's text fields (MkwVkHost.take_text, host/rx_backend.c): a character
+   comes as its Unicode code point, an editing key as HOS_TEXT_KEY | its Windows key code (VK_LEFT, VK_RIGHT, VK_HOME, VK_END,
+   VK_BACK, VK_DELETE, VK_RETURN, VK_ESCAPE). The focus take_text is given: none, a field has the keyboard, or that and a paste
+   asked (the clipboard's first line comes as typed) */
+enum { HOS_TEXT_KEY = 0x40000000 };
+enum { HOS_TEXT_OFF, HOS_TEXT_ON, HOS_TEXT_PASTE };
 
 /* what the executable gives the back end */
 typedef struct MkwVkHost {
@@ -152,6 +159,12 @@ typedef struct MkwVkHost {
     void (*slept_ns)(int64_t out[2]);
     /* (version 15, hookshot) whether the host times those sleeps: 1 while the Breakdown shows, 0 (the default) costs nothing */
     void (*fps_timing)(int on);
+    /* (hookshot, version 16) the Insert menu's text fields: focus HOS_TEXT_OFF while none has the keyboard (the window takes no
+       text then: no input method opens over the game, and what was queued is dropped), HOS_TEXT_ON while one has it,
+       HOS_TEXT_PASTE to paste the clipboard's first line into it; then what was typed since the last call into out, at most
+       max, in order (characters and HOS_TEXT_KEY editing keys, repeats included; Ctrl+V and Shift+Insert paste): the count.
+       host/display.c (WM_CHAR, WM_KEYDOWN) and host/posix/display_sdl.c (SDL's text input and key events) put them in */
+    int (*take_text)(int focus, uint32_t *out, int max);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */
