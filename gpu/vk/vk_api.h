@@ -31,7 +31,7 @@ enum { HOS_OPT_VOLUME = 27, HOS_OPT_MUTE_BACKGROUND };
 /* (hookshot) the Controls tab's Walk mode and Walk speed (host/nn_hid.c: the Walk control, HOS_KEY_WALK): 0 Link walks
    while its key is held, 1 one press walks and the next runs again; how far the movement keys then tilt the left stick, in
    percent of the way (15 to 90) */
-enum { HOS_OPT_WALK_MODE = 46, HOS_OPT_WALK_SPEED };
+enum { HOS_OPT_WALK_MODE = 52, HOS_OPT_WALK_SPEED };
 /* (hookshot) the Insert menu's HDR set to Native (host/nn_vi.c QueryDisplayHdrStatus and QueryDisplayHdrPaperWhite): whether
    the game is told its display is HDR10 (the swapchain is one), and the peak and paper white it is told, in nits */
 /* (HOS_OPT_DISCORD, 43: the Insert menu's Discord status row, host/discord_rpc.c: 1 on) */
@@ -49,7 +49,7 @@ enum { HOS_OPT_PROMPTS = 46 };
    temporal upscalers, which take only that scene) */
 enum { HOS_OPT_HDR_TONEMAP = 47 };
 /* Gameplay's vertical field of view, percent of the game's current angle; 100 is unchanged. */
-/* 49 and 50 are reserved for Walk mode and Walk speed (#2345). */
+/* Walk mode and Walk speed use 52 and 53 (#2345). */
 enum { HOS_OPT_FOV = 51 };
 /* (HOS_OPT_SKIP_OPENING, 52: Gameplay's Skip opening, host/hos_main.c hos_oot_opening. Off. The new-game story movie
    and Navi waking Link. 44 stays reserved for Skip title, 49 and 50 for Walk, 60 for the item wheel. A new option id
