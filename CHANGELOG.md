@@ -1,5 +1,73 @@
 # Changelog
 
+## [2.2.0-rc.1](https://github.com/NotRexed/Hookshot/compare/v2.1.0...v2.2.0-rc.1) (2026-11-11)
+
+
+### Features
+
+* an Upscaler choice Off: no upscaling at all, the game's own network left out too ([#2097](https://github.com/NotRexed/Hookshot/issues/2097)) ([215ab3d](https://github.com/NotRexed/Hookshot/commit/215ab3dd6536cb21fc67c2e89c31c10a18df555c))
+* make_game.py --fetch-fsr-runtime fetches AMD's FSR 4 runtime ([#1866](https://github.com/NotRexed/Hookshot/issues/1866)) ([d7dd931](https://github.com/NotRexed/Hookshot/commit/d7dd931d2762217ef67b4ba4b0aa10043a82056d))
+* **Menu:** a row that turns the preset to Custom keeps the preset's memory budgets ([#1358](https://github.com/NotRexed/Hookshot/issues/1358)) ([26b2f74](https://github.com/NotRexed/Hookshot/commit/26b2f7445d2351fc054d9fe7621d7e8790875865))
+* **menu:** a V-Sync row (Auto, On, Off) ([#2041](https://github.com/NotRexed/Hookshot/issues/2041)) ([b0361d2](https://github.com/NotRexed/Hookshot/commit/b0361d2407ad8de9f1637933fe9e1405d82dbbc8))
+* **update:** an update track (Release, Release candidate, Nightly) in the builders and the game ([#2061](https://github.com/NotRexed/Hookshot/issues/2061)) ([6cecdd1](https://github.com/NotRexed/Hookshot/commit/6cecdd18b5301984feb99535cac323f8d1e90b6a))
+* **video:** support 48:9 triple-monitor picture geometry ([#2052](https://github.com/NotRexed/Hookshot/issues/2052)) ([b46b60f](https://github.com/NotRexed/Hookshot/commit/b46b60f036ea739ca8edbde851b0f295a5ac7977))
+
+
+### Bug Fixes
+
+* **builder:** a drive that cannot read its files is said as that, with its repair ([#2063](https://github.com/NotRexed/Hookshot/issues/2063)) ([#2072](https://github.com/NotRexed/Hookshot/issues/2072)) ([5c59382](https://github.com/NotRexed/Hookshot/commit/5c59382e5d290487394cd6c7c7e480c009b2b104))
+* **builder:** a package with a Python of its own runs no other ([#2045](https://github.com/NotRexed/Hookshot/issues/2045)) ([#2088](https://github.com/NotRexed/Hookshot/issues/2088)) ([d1d3888](https://github.com/NotRexed/Hookshot/commit/d1d3888c2444ca13e96001ec14388715831b24c1))
+* **builder:** retain bounded Linux Play startup diagnostics ([#2024](https://github.com/NotRexed/Hookshot/issues/2024)) ([44e56b0](https://github.com/NotRexed/Hookshot/commit/44e56b0c2b7d2bf235f25455666841595ef2fc85))
+* **builder:** the Python setup checks the setup list as setup.c does ([#2057](https://github.com/NotRexed/Hookshot/issues/2057)) ([812f28d](https://github.com/NotRexed/Hookshot/commit/812f28d5389480746564af3e58e1b12e99f29534))
+* **build:** run offline bake with portable zstd and Clang 18 ([#1954](https://github.com/NotRexed/Hookshot/issues/1954)) ([51e1d98](https://github.com/NotRexed/Hookshot/commit/51e1d98f1b0f9f64ca439ea0708f870659f13c3e))
+* **debug:** the flight lets Link go for events and respawns ([#2050](https://github.com/NotRexed/Hookshot/issues/2050)) ([c2a8c92](https://github.com/NotRexed/Hookshot/commit/c2a8c922e104b7f7007961416494b34e5a5c67a6))
+* **input:** turn a frozen gyroscope's sensors off and on again (gyro dead after Alt+Tab under Steam) ([#2036](https://github.com/NotRexed/Hookshot/issues/2036)) ([b76f12d](https://github.com/NotRexed/Hookshot/commit/b76f12d12ad6c7109f73abcd9a201f3356c64a5a))
+* **linux:** the updater follows a redirect only to another https link ([#2045](https://github.com/NotRexed/Hookshot/issues/2045)) ([#2086](https://github.com/NotRexed/Hookshot/issues/2086)) ([465ab86](https://github.com/NotRexed/Hookshot/commit/465ab86dbe44825f33e085d3397bb3585f89ca75))
+* **menu:** keep the mouse free after Escape then F1 ([#2035](https://github.com/NotRexed/Hookshot/issues/2035)) ([1a43a1e](https://github.com/NotRexed/Hookshot/commit/1a43a1e2942c7793a19115d2bd0f509adfac0195))
+* **menu:** the Ultrawide row says Off (16:9) when it is off ([#2078](https://github.com/NotRexed/Hookshot/issues/2078)) ([bb94350](https://github.com/NotRexed/Hookshot/commit/bb94350a2098b10947fa865eadc0918b3d9280d3))
+* **nup:** exclude digest-mismatched stand-in sources ([#2019](https://github.com/NotRexed/Hookshot/issues/2019)) ([2009c5f](https://github.com/NotRexed/Hookshot/commit/2009c5f98ce32631893bbf4f36c788aa91b8c9fb))
+* **prompts:** the controls page's leader lines end on their buttons ([#2089](https://github.com/NotRexed/Hookshot/issues/2089)) ([798f325](https://github.com/NotRexed/Hookshot/commit/798f32587e3fb7728a7f26322587bc30c5650c29))
+* **trace:** Separate present-call and virtual-core waits ([#1983](https://github.com/NotRexed/Hookshot/issues/1983)) ([fc7a982](https://github.com/NotRexed/Hookshot/commit/fc7a982813df880d941eb808a24c10cff3463ebf))
+* **vi:** prevent frame-time jitter from speeding up the game clock ([#1911](https://github.com/NotRexed/Hookshot/issues/1911)) ([f4f2c74](https://github.com/NotRexed/Hookshot/commit/f4f2c743fec4e84beef42ffad4fbf80c77323f70))
+* **vi:** the pick-up counter fades again above a 60 fps cap ([#1832](https://github.com/NotRexed/Hookshot/issues/1832)) ([#2006](https://github.com/NotRexed/Hookshot/issues/2006)) ([f915af9](https://github.com/NotRexed/Hookshot/commit/f915af93ed0061cf4a7514c66d34ab9de1f95bf7))
+* **vk:** refresh pipeline states during Builder preparation ([#1980](https://github.com/NotRexed/Hookshot/issues/1980)) ([ca082bf](https://github.com/NotRexed/Hookshot/commit/ca082bfc2ad870e9250aa8e6d5f4648e46c2b083))
+* **vk:** task + mesh draws through the compute fallback on Navi 21 too ([#996](https://github.com/NotRexed/Hookshot/issues/996)) ([#1992](https://github.com/NotRexed/Hookshot/issues/1992)) ([1396428](https://github.com/NotRexed/Hookshot/commit/1396428d0bfcde68b5c7bd63f9837564d9af1a05))
+* **vk:** tree-shadow flicker without the TAAU network: the shadow mask evened out over frames (rebase of [#477](https://github.com/NotRexed/Hookshot/issues/477)) ([#1581](https://github.com/NotRexed/Hookshot/issues/1581)) ([746fa11](https://github.com/NotRexed/Hookshot/commit/746fa11582bd05518e20b2ce890e97d9f8d8bb22))
+
+
+### Build System
+
+* **linux:** dav1d and the Vulkan back end's headers are pinned by what they unpack to ([#2045](https://github.com/NotRexed/Hookshot/issues/2045)) ([#2087](https://github.com/NotRexed/Hookshot/issues/2087)) ([9a37fac](https://github.com/NotRexed/Hookshot/commit/9a37facb8234a922da6a95825ea151e7ca633104))
+* **release:** a contributed pipeline list from [#2034](https://github.com/NotRexed/Hookshot/issues/2034), RTX 4060 laptop with frame generation and HDR, 6597 pipelines ([#2082](https://github.com/NotRexed/Hookshot/issues/2082)) ([51d468f](https://github.com/NotRexed/Hookshot/commit/51d468f91b2538b3afb2dd6c9f9e6124d23b03aa))
+* **release:** the pipeline tour's list, 11227 pipelines (6238 no other list holds) ([#2065](https://github.com/NotRexed/Hookshot/issues/2065)) ([a74f6a8](https://github.com/NotRexed/Hookshot/commit/a74f6a8846c6a1dc063895a6730069112ed3c737))
+* **release:** two contributed pipeline lists from [#2034](https://github.com/NotRexed/Hookshot/issues/2034) (RTX 5090 ultrawide DLAA, RX 9070 XT) ([#2075](https://github.com/NotRexed/Hookshot/issues/2075)) ([21fa136](https://github.com/NotRexed/Hookshot/commit/21fa136590ab862f761852effc34395982072c90))
+
+
+### Continuous Integration
+
+* **appimage:** the object cache keeps the objects a build used ([#2090](https://github.com/NotRexed/Hookshot/issues/2090)) ([eb689bc](https://github.com/NotRexed/Hookshot/commit/eb689bcb81461d2d3d09a591af20a78deb2b319d))
+* cache the AppImage's back-end objects for pull requests, and a lighter deps cache ([#2079](https://github.com/NotRexed/Hookshot/issues/2079)) ([37031ed](https://github.com/NotRexed/Hookshot/commit/37031ed7e8eaaa1bed03f707d1b1f31d2a5c0a62))
+* unpack LLVM beside the other dependencies, not before them ([#2091](https://github.com/NotRexed/Hookshot/issues/2091)) ([ceb8745](https://github.com/NotRexed/Hookshot/commit/ceb8745e05d8ee83b401c04ceb20a02feb41792d))
+
+
+### Documentation
+
+* **readme:** NVIDIA DLSS on Linux, one entry for each way to build ([#2056](https://github.com/NotRexed/Hookshot/issues/2056)) ([#2074](https://github.com/NotRexed/Hookshot/issues/2074)) ([23840a4](https://github.com/NotRexed/Hookshot/commit/23840a481bf72786d8cee8c6d72be1944511f1f1))
+* tested configurations: RTX 5090, 621.14, Windows 11 (v2.0.14) ([#2037](https://github.com/NotRexed/Hookshot/issues/2037)) ([28a60b5](https://github.com/NotRexed/Hookshot/commit/28a60b5e38866775d80f16f4d796a1c47bbed279))
+
+
+### Tests
+
+* fix main's three red checks (fixture fopen deprecation; DLSS toggle stub lacks switching; actionlint SC2012) ([#2092](https://github.com/NotRexed/Hookshot/issues/2092)) ([e3b1964](https://github.com/NotRexed/Hookshot/commit/e3b1964ed8e8e71faaed256dc21d6c55105eb7c0))
+* main's red checks after [#1866](https://github.com/NotRexed/Hookshot/issues/1866) and [#2041](https://github.com/NotRexed/Hookshot/issues/2041) (finish-block 'a'; vsync fixture getenv deprecation) ([#2109](https://github.com/NotRexed/Hookshot/issues/2109)) ([7d24a73](https://github.com/NotRexed/Hookshot/commit/7d24a736dae8a2430988d459aba287a303877bdb))
+* main's source checks pass again after [#2061](https://github.com/NotRexed/Hookshot/issues/2061) and [#2046](https://github.com/NotRexed/Hookshot/issues/2046) ([#2068](https://github.com/NotRexed/Hookshot/issues/2068)) ([96ad468](https://github.com/NotRexed/Hookshot/commit/96ad46809fea43f1c04c6de69ae19abf1813fabc))
+
+
+### Miscellaneous Chores
+
+* **main:** release 2.1.0-rc.3 ([#2062](https://github.com/NotRexed/Hookshot/issues/2062)) ([9d5a292](https://github.com/NotRexed/Hookshot/commit/9d5a2927c4c7c2624bcd8cf01dfa70c47c6037f5))
+* **release:** record 2.1.0 as released ([309f86b](https://github.com/NotRexed/Hookshot/commit/309f86b1cd88068106c40c02892854712f9db0b1))
+
 ## [2.1.0](https://github.com/NotRexed/Hookshot/releases/tag/v2.1.0) (2026-11-11)
 
 Release candidate [v2.1.0-rc.2](https://github.com/NotRexed/Hookshot/releases/tag/v2.1.0-rc.2), published as 2.1.0. Its changes are in its release candidates' entries below.
