@@ -46,8 +46,22 @@ def main():
     p.add_argument("--case", choices=CASES)
     a = p.parse_args()
     hid = (ROOT / "host" / "nn_hid.c").read_text(encoding="utf-8")
+    replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
+    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
 
     read = block(hid, "static void read_input(")
+    behind = read[read.index("if (!game_in_front()"):]   # (with or without PR 545's scripted-background test)
+    behind = behind[:behind.index("return;") + len("return;")]
+    if "pads_in_background(" not in behind or "pads_read(" not in behind:
+        raise SystemExit("behind another window the pads are never read")
+    if "key(" in behind or "mouse" in behind:
+        raise SystemExit("behind another window the keyboard or mouse would reach the game")
+    option = replay[replay.index("t.option = "):]
+    option = option[:option.index("};") + 2]
+    if "id == 4 ? opts.pad_background" not in option:
+        raise SystemExit("the host cannot see the menu's row (option 4)")
+    if '"Controller in background", &opts.pad_background' not in menu:
+        raise SystemExit("the Insert menu has no row for it")
 
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
     constants = block(hid, "enum { B_A") + ";\n" + block(api, "enum { HOS_SW_A") + ";\n"
@@ -84,11 +98,10 @@ static void player_used(void) {}
         block(hid, "static int mouse_vk_slot("), re.search(r"^static int mouse_armed\[5\];", hid, re.M).group(0),
         block(hid, "static void mouse_buttons_arm("), block(hid, "static int bound_down("),
         block(hid, "static void oc_notes("), block(hid, "static uint64_t oc_pad_word("),
-        block(hid, "static int flight_jump_shortcut("),
         # (walking on the keyboard: the movement keys' tilt, read_input asks for it)
         block(hid, "static int walk_held("), block(hid, "enum { WALK_SPEED_DEFAULT") + ";",
         block(hid, "static int walk_percent("), block(hid, "static void move_keys_stick("),
-        read, block(hid, "static void npad_states(")))
+        block(hid, "static int flight_jump_shortcut("), read, block(hid, "static void npad_states(")))
     glue = (ROOT / "host/mkw_glue.c").read_text(encoding="utf-8")
     actual += "\n" + "\n".join(block(glue, "uint64_t " + name + "(")
                                   for name in ("hos_title_input", "hos_frame_step_buttons"))

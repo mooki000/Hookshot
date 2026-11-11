@@ -9,7 +9,7 @@ Toggle switches on a press, not while the Insert menu has the keys or the window
 as they come back counts after its release; the key can be rebound (a mouse button too) and taken by another control;
 an options file from before the Walk control that gives Caps Lock to another control leaves Walk without a key. The
 wiring (option ids, the renderer's answer, the menu's rows and Controls page row, both bind_names copies, the docs) is
-read from the source.
+read from the source. The compiled fixture uses the real header's option constants to answer the host's live reads.
 
 python -I -B tests/test_walk_key.py   (needs a C compiler)
 """
@@ -45,7 +45,8 @@ def block(text, marker):
 def between(text, first, last):
     """from the line that holds first to the end of the block or statement that starts at last"""
     start = text.rindex("\n", 0, text.index(first)) + 1
-    return text[start:text.index(last)] + block(text, last)
+    end = text.index(last, start)
+    return text[start:end] + block(text[end:], last)
 
 
 PRELUDE = r"""
@@ -55,8 +56,16 @@ PRELUDE = r"""
 #include <string.h>
 #include <stdint.h>
 #include "vk_api.h"
+_Static_assert(HOS_OPT_WALK_MODE == 52, "Walk mode option ID");
+_Static_assert(HOS_OPT_WALK_SPEED == 53, "Walk speed option ID");
 typedef long LONG;
 typedef unsigned long DWORD;
+typedef int SRWLOCK;
+#define SRWLOCK_INIT 0
+static void AcquireSRWLockExclusive(SRWLOCK *p) { (void)p; }
+static void ReleaseSRWLockExclusive(SRWLOCK *p) { (void)p; }
+static void AcquireSRWLockShared(SRWLOCK *p) { (void)p; }
+static void ReleaseSRWLockShared(SRWLOCK *p) { (void)p; }
 #define VK_LBUTTON 0x01
 #define VK_RBUTTON 0x02
 #define VK_MBUTTON 0x04
@@ -109,6 +118,7 @@ static void scripted_input(uint64_t *b, int32_t s[4]) { (void)b; (void)s; }
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }   /* (host/control.c: off) */
 static int game_in_front(void) { return front; }
 static volatile LONG pad_raw_now;
+static int pad_after_menu;   /* (main shares this state with the ocarina note word) */
 static void player_used(void) {}
 """
 
@@ -118,6 +128,8 @@ static int32_t pad_stick[4], mouse_right[2];
 static int mouse_captured;
 static void pads_read(uint64_t *b, int32_t s[4]) { (void)b; stick_max(s, pad_stick); }
 int hos_mouse_native(void) { return -1; }
+void hos_mouse_native_free(int free) { (void)free; }
+void hos_mouse_native_stick(int held) { (void)held; }
 static void mouse_setup(void) {}
 static void mouse_sens_keys(void) {}
 static int mouse_stick(int32_t *x, int32_t *y, int pointing) {
@@ -133,7 +145,10 @@ static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
 static uint64_t buttons;
 static int32_t st[4];
-static void poll(void) { read_input(&buttons, st); }
+static void poll(void) {
+    read_input(&buttons, st);
+    CHECK(oc_consumed_pads == 0);   /* the inactive note layer must not consume the controller while walking */
+}
 static void release(void) { memset(held, 0, sizeof held); }
 static int near_share(int32_t v, int percent) {   /* (a straight tilt: percent of 32767, within one step) */
     const int64_t want = 32767LL * percent / 100;
@@ -295,6 +310,7 @@ class WalkKeyTests(unittest.TestCase):
         code = [block(hid, "enum { B_A"), block(hid, "static int key("), block(hid, "static int kmap_down("),
                 between(hid, "static const char *const bind_names[HOS_KEY_N]", "void hos_bind("),
                 between(hid, "static int mouse_vk_slot(", "static int bound_down("), block(hid, "static void stick_max("),
+                block(hid, "static void oc_notes("),
                 block(hid, "static int pads_in_background("), block(hid, "static int walk_held("),
                 block(hid, "enum { WALK_SPEED_DEFAULT"), block(hid, "static int walk_percent("),
                 block(hid, "static void move_keys_stick(")]
@@ -319,8 +335,8 @@ class WalkKeyTests(unittest.TestCase):
     def test_wiring(self):
         api, hid, menu = read("gpu", "vk", "vk_api.h"), read("host", "nn_hid.c"), read("gpu", "vk", "vk_menu.cpp")
         header, replay = read("gpu", "vk", "vk_menu.h"), read("gpu", "vk", "vk_replay.cpp")
-        self.assertIn("enum { HOS_OPT_WALK_MODE = 46, HOS_OPT_WALK_SPEED };", api)
-        self.assertRegex(api, r"HOS_KEY_CAM_RIGHT, HOS_KEY_WALK, HOS_KEY_N \};")
+        self.assertIn("enum { HOS_OPT_WALK_MODE = 52, HOS_OPT_WALK_SPEED };", api)
+        self.assertRegex(api, r"HOS_KEY_OC_NOTE_X, HOS_KEY_WALK, HOS_KEY_N \};")
         # (the host's two copies of the names: the ini's key_walk)
         self.assertEqual(names(hid), names(menu))
         self.assertEqual(names(hid)[-1], "walk")
