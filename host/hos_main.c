@@ -373,8 +373,11 @@ static int env_line_allowed(const char *name, const char *value) {
     int ok = 0;
     for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
     if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
-    /* (hookshot) nor co-op's room at start (host/coop.c): a shared file would put the player in its author's room */
-    if (!strncmp(name, "HOS_COOP_", 9) && (!strcmp(name + 9, "AUTO") || !strcmp(name + 9, "ROOM"))) return 0;
+    /* (hookshot) nor co-op's room at start (host/coop.c): a shared file would put the player in its author's room; nor
+       accepting every room (HOS_COOP_ACCEPT=always, host/oot_coop.c) or a test's flag sets, which are the player's own
+       environment's, never a file someone handed them */
+    if (!strncmp(name, "HOS_COOP_", 9) && (!strcmp(name + 9, "AUTO") || !strcmp(name + 9, "ROOM") || !strcmp(name + 9, "ACCEPT") ||
+                                          !strcmp(name + 9, "TEST_SET"))) return 0;
     /* (hookshot) nor the libraries SDL loads by name (SDL_VULKAN_LIBRARY, SDL_OPENGL_LIBRARY, SDL_VIDEO_GL_DRIVER,
        SDL_VIDEO_EGL_DRIVER...): a bare file name is looked for beside the game and in the current folder on Windows */
     if (!strncmp(name, "SDL_", 4) && (strstr(name, "_LIB") || strstr(name, "GL_DRIVER"))) return 0;
