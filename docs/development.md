@@ -116,6 +116,8 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOS_INPUT_LIVE=<file>` | A file the test appends lines of presses to, read every 30 ms; each line's times count from when it is read. A line `!cheat <n>` sends a Cheats page action, `!synclog` logs the NVN syncs (`!dump`, `!shots`, `!rdoc` and `!flasharm` are the WebGPU renderer's) |
 | `HOS_INPUT_FRAME_CLOCK=1` | The script's time runs at 60 game frames a second instead of the wall clock |
 | `HOS_INPUT_EXCLUSIVE`, `HOS_INPUT_BACKGROUND`, `HOS_INPUT_SCRIPT_BACKGROUND` (set) | As above; the last lets every device count while the window is behind another one |
+| `HOS_OOT_STATE_FILE=<file>`, `HOS_OOT_STATE_EVERY=<n>` | What a script steering the game needs before its next press, as a line of JSON every n presents (6), written from the update of Link (so only while he is in a map): the map, his position and facing, the camera's yaw, whether an event (a cutscene, a conversation) plays, loading, age, life, rupees, the A button's action and the music. Read only; the fields are described at the top of `host/oot_state_tap.c` |
+| `HOS_OOT_STATE_FLAGS=<name>,...`, `HOS_OOT_STATE_CHANGES=1` | With the above: those GameData flags by name (or `0x` and the hash), at most 64; every Bool, Int, Enum and UInt flag that changed since the line before, by hash |
 | `RX_VK_MENU_SCRIPT=<seconds>:<key>,...` | Timed Insert menu keys: `INS`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `ESC`, `ENTER`, `TABL`, `TABR` |
 | `RX_VK_UI_PROMPTS=pad` or `keys` | The menu's button prompts for a controller or the keys, whatever was used last (screenshots) |
 | `RX_VK_UI_GAME_FONT=0` | The menu, the counter and the start-up screen in the included Libertinus, not the game's own font |
