@@ -5,8 +5,9 @@
    page (gpu/vk/vk_menu.cpp) changes it, kept in hookshot_options.ini (binds_load). The defaults:
    Keyboard (totk-pc-recomp's layout): WASD left stick, arrows or IJKL right stick (camera), Space X (jump), E A
    (action), Shift B (run/cancel), Q L (abilities), R R, Z ZL, X or F ZR (bow), Ctrl left-stick click (crouch), C
-   right-stick click (first person), Tab or Enter Plus, M Minus (map), 1 2 3 4 d-pad left, up, right, down. Only
-   while the game's window is in front (the key state is global).
+   right-stick click (first person), Tab or Enter Plus, M Minus (map), 1 2 3 4 d-pad left, up, right, down, Caps Lock
+   walk (walk_held: the movement keys tilt the stick less). Only while the game's window is in front (the key state is
+   global).
    Mouse (after a click in the window, display.c; Esc releases): its motion is the right stick (mouse panning,
    mouse_stick), or with the Insert menu's "Mouse camera" set to Native (HOS_MOUSE_NATIVE=1 or 0 overrides it) turns
    the camera itself (mouse_native.c); left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
@@ -502,13 +503,13 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
    hookshot_options.ini beside the executable when it has them: pad_<button>=<position>[,<position>] (HOS_PAD_*, -1 none) and
    key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
    first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
-   stick's and the camera's directions, and the ocarina's five note controls (which take a gamepad input too).
+   stick's and the camera's directions, and Walk; the ocarina's five note controls take a gamepad input too.
    A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
    only while the mouse is captured ---- */
 static const char *const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus",
                                                   "minus", "left", "up", "right", "down", "move_up", "move_down",
                                                   "move_left", "move_right", "cam_up", "cam_down", "cam_left",
-                                                  "cam_right", "note_l", "note_r", "note_a", "note_y", "note_x"};
+                                                  "cam_right", "note_l", "note_r", "note_a", "note_y", "note_x", "walk"};
 static const signed char pad_default[HOS_SW_N] = {
     HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
     HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
@@ -524,11 +525,11 @@ static int is_mouse_vk(int vk) { return vk == VK_LBUTTON || vk == VK_RBUTTON || 
                                         vk == VK_XBUTTON1 || vk == VK_XBUTTON2; }
 /* (the keys of totk-pc-recomp's docs/controls.md, github.com/valentderah/totk-pc-recomp, MIT; plus Enter for Plus; the
    mouse's left button Y, attack, and right button ZL, shield and lock-on, as before; WASD the left stick, the arrows or
-   IJKL the camera) */
+   IJKL the camera; Caps Lock walk, beside the movement keys and no other control's) */
 static const unsigned char key_default[HOS_KEY_N][2] = {
     {'E'}, {VK_SHIFT}, {VK_SPACE}, {VK_LBUTTON}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z', VK_RBUTTON}, {'X', 'F'},
     {VK_TAB, VK_RETURN}, {'M'}, {'1'}, {'2'}, {'3'}, {'4'}, {'W'}, {'S'}, {'A'}, {'D'}, {VK_UP, 'I'}, {VK_DOWN, 'K'},
-    {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}, {0}, {0}, {0}, {0}, {0}};   /* (the five note rows start unset: oc_pad_word) */
+    {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}, {0}, {0}, {0}, {0}, {0}, {VK_CAPITAL}};   /* (the five note rows start unset: oc_pad_word) */
 static SRWLOCK pad_bind_lock = SRWLOCK_INIT;
 static int pad_bind[HOS_KEY_N][2];
 static volatile LONG key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
@@ -577,7 +578,7 @@ static void binds_load(void) {
     int changed = 0;
     if (f) {
         char line[80];
-        int version = 0, had_keys = 0;   /* (options_version: 3 since the mouse's buttons are bindings) */
+        int version = 0, had_keys = 0, walk_named = 0;   /* (options_version: 3 since the mouse's buttons are bindings) */
         while (fgets(line, sizeof line, f)) {
             char *eq = strchr(line, '=');
             if (!eq) continue;
@@ -589,6 +590,7 @@ static void binds_load(void) {
                 if (strcmp(line + 4, bind_names[i]) || (pad && !has_pad(i))) continue;
                 changed++;
                 const char *comma = strchr(eq + 1, ',');
+                walk_named |= keys && i == HOS_KEY_WALK;
                 if (pad) {
                     pad_bind[i][0] = pad_code(eq + 1);
                     pad_bind[i][1] = comma ? pad_code(comma + 1) : -1;
@@ -609,6 +611,18 @@ static void binds_load(void) {
                 for (int i = 0; i < HOS_KEY_N; i++)
                     for (int k = 0; k < 2; k++) taken |= key_bind[i][k] == mouse_to[m][1];
                 if (!taken && !key_bind[mouse_to[m][0]][1]) key_bind[mouse_to[m][0]][1] = mouse_to[m][1];
+            }
+        }
+        /* A file from before the Walk control: its default key (Caps Lock) stays off when the file gives it to another
+           control, which kept it alone before */
+        if (!walk_named) {
+            int taken = 0;
+            for (int i = 0; i < HOS_KEY_N; i++)
+                for (int k = 0; k < 2; k++) taken |= i != HOS_KEY_WALK && key_bind[i][k] == key_default[HOS_KEY_WALK][0];
+            if (taken) {
+                key_bind[HOS_KEY_WALK][0] = 0;
+                hos_log("hid: no Walk key: hookshot_options.ini gives its default key (%d) to another control",
+                        key_default[HOS_KEY_WALK][0]);
             }
         }
     }
@@ -950,6 +964,40 @@ static uint64_t oc_pad_word(uint64_t buttons) {
     return w;
 }
 
+/* (hookshot) Walking on the keyboard. The movement keys push the left stick to its edge, so on the keyboard Link always
+   ran. While the Walk control's key is held (Caps Lock unless the Controls page changes it), or with the Controls tab's
+   Walk mode on Toggle from one press of it to the next, they tilt it to the Walk speed row's share of the way instead,
+   where the game walks him (move_keys_stick). Only the movement keys: the camera keys, the mouse, the controllers and
+   scripted input keep their tilt. down: the key now; readable 0 while the keys are not the game's (the Insert menu
+   open, the window behind another one): a key held as they come back counts only after its release, so the press that
+   closed the menu or the one Alt+Tab ended with does not switch walking. Returns whether Link walks now */
+static int walk_held(int down, int readable, int toggle) {
+    static int was_down = 1, on;   /* (a key held at the first read counts only after its release) */
+    if (!readable) {
+        was_down = 1;
+        return toggle && on;
+    }
+    if (!toggle) on = 0;
+    else if (down && !was_down) on = !on, hos_log("hid: walking %s (Walk mode Toggle)", on ? "on" : "off");
+    was_down = down;
+    return toggle ? on : down;
+}
+/* The Walk speed row (HOS_OPT_WALK_SPEED): 15 to 90 percent of the stick's way; anything else (no Vulkan renderer's menu to
+   ask) the row's default. Measured in Kokiri Forest: Link walks his slowest (1.03 m/s) at 15% and below, his walk's top
+   speed (1.47 m/s) from 45% to 50%; from 55% he speeds up into a jog, at full tilt he runs at 4.5 m/s */
+enum { WALK_SPEED_DEFAULT = 45 };
+static int walk_percent(int v) { return v >= 15 && v <= 90 ? v : WALK_SPEED_DEFAULT; }
+/* The movement keys' left stick, x and y -1, 0 or 1 (right, up): at its edge, or while Link walks (percent, 0: he does not)
+   that share of the way, a diagonal by its length (1/sqrt(2) a side, 7071/10000), so that he walks that way too. The
+   first tilt at each share is logged */
+static void move_keys_stick(int x, int y, int percent, int32_t out[2]) {
+    const int32_t tilt = percent ? (int32_t)(32767LL * percent * (x && y ? 7071 : 10000) / 1000000) : 32767;
+    out[0] = x * tilt, out[1] = y * tilt;
+    static int logged;
+    if (percent && (x || y) && percent != logged)
+        logged = percent, hos_log("hid: walking: the movement keys tilt the left stick to %d%% (%d, %d)", percent, out[0], out[1]);
+}
+
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
@@ -982,6 +1030,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         static int looked;
         if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
         if (pads_in_background(env, rx_option(4, 0))) pads_read(buttons, stick);
+        walk_held(0, 0, 0);
         return;
     }
     {   /* (hookshot) while the Insert menu is open the pads are its own, as the keyboard is (key()), and after it
@@ -1030,12 +1079,16 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     if (captured)
         for (int i = 0; i < HOS_SW_N; i++)
             if (bound_down(i, 1)) *buttons |= 1ULL << i;
-    /* (the left stick's and the camera's keys: WASD and the arrows or IJKL by default) */
+    /* (the left stick's and the camera's keys: WASD and the arrows or IJKL by default; the movement keys tilt the stick
+       less while Link walks: walk_held) */
+    const int walk = walk_held(bound_down(HOS_KEY_WALK, captured), !rx_option(1, 0), rx_option(HOS_OPT_WALK_MODE, 0) == 1);
+    int32_t move[2];
+    move_keys_stick(bound_down(HOS_KEY_MOVE_RIGHT, captured) - bound_down(HOS_KEY_MOVE_LEFT, captured),
+                    bound_down(HOS_KEY_MOVE_UP, captured) - bound_down(HOS_KEY_MOVE_DOWN, captured),
+                    walk ? walk_percent(rx_option(HOS_OPT_WALK_SPEED, 0)) : 0, move);
     const int cx = bound_down(HOS_KEY_CAM_RIGHT, captured) - bound_down(HOS_KEY_CAM_LEFT, captured),
               cy = bound_down(HOS_KEY_CAM_UP, captured) - bound_down(HOS_KEY_CAM_DOWN, captured);
-    const int32_t keys[4] = {(bound_down(HOS_KEY_MOVE_RIGHT, captured) - bound_down(HOS_KEY_MOVE_LEFT, captured)) * 32767,
-                             (bound_down(HOS_KEY_MOVE_UP, captured) - bound_down(HOS_KEY_MOVE_DOWN, captured)) * 32767,
-                             cx * 32767, cy * 32767};
+    const int32_t keys[4] = {move[0], move[1], cx * 32767, cy * 32767};
     stick_max(stick, keys);
     if (keys[0] || keys[1] || keys[2] || keys[3]) player_used();
     /* (hookshot, mouse_native.c) the keys and the pads are the right stick too: while they turn the camera, its angles are
