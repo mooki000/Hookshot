@@ -98,7 +98,7 @@ static int ini_text(const char *key, char *out, size_t size) {
     snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
     FILE *f = fopen(path, "r");
     if (!f) return 0;
-    char line[80];
+    char line[256];   /* (a relay's name in coop_server=, host/coop.c, can be long) */
     const size_t len = strlen(key);
     int found = 0;
     while (fgets(line, sizeof line, f))
@@ -114,6 +114,7 @@ int hos_ini_option(const char *key, int otherwise) {   /* (hookshot: the Insert 
     char text[80];
     return ini_text(key, text, sizeof text) ? atoi(text) : otherwise;
 }
+int hos_ini_text(const char *key, char *out, size_t size) { return ini_text(key, out, size); }   /* (hookshot: host/coop.c's names) */
 static int handheld(void) {
     static int v = -1;
     if (v < 0) v = getenv("HOS_HANDHELD") ? atoi(getenv("HOS_HANDHELD")) != 0 : ini_option("handheld_profile", 0) != 0;
