@@ -51,6 +51,7 @@ import win_manifest
 NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
+MONOCYPHER = os.path.join(kit.HERE, "..", "third_party", "monocypher")
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
 PGO = os.environ.get("RX_PGO", "")
@@ -857,6 +858,10 @@ def main():
         for rel in open(os.path.join(OPUS, "sources.txt")).read().split():
             jobs.append((cc, os.path.join(OPUS, rel), os.path.join(obj_dir, "opus_" + rel.replace("/", "_")[:-2] + ".o"),
                          oflags, b"opus-1.5.2"))
+    # Monocypher 4.0.2 (third_party/monocypher): co-op's cryptography (host/coop_proto.c)
+    if host_srcs:
+        jobs.append((cc, os.path.join(MONOCYPHER, "monocypher.c"), os.path.join(obj_dir, "monocypher.o"),
+                     target() + CPU + ["-O2", "-g0", "-Wno-everything"], b"monocypher-4.0.2"))
     # the renderer (C++20, NDEBUG: no asserts in it or suyu), when a wgpu-native release is there
     wgpu = a.standalone and not a.only and not LINUX and os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h"))
     if a.standalone and not a.only and not wgpu and not LINUX:
