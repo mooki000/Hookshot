@@ -25,6 +25,17 @@ typedef struct HosControlSetting {
     int restart, fixed;   /* applies at the next start; nothing to choose on this PC */
 } HosControlSetting;
 
+/* OoT samples are bounded JSON objects, made on Link's update, never from guest memory on the socket thread.
+   A subscription owns its watch list and its change baseline. The slot is the bridge's connection slot. */
+#define HOS_CONTROL_OOT_JSON 32768
+#define HOS_CONTROL_OOT_CLIENTS 8
+#define HOS_CONTROL_OOT_FLAGS 64
+typedef struct HosControlOotWatch {
+    int64_t every;
+    int nflags, changes;
+    char flags[HOS_CONTROL_OOT_FLAGS][48];
+} HosControlOotWatch;
+
 /* The game as the bridge sees it: control.c's own for the game, a fake one in tests/control_test.c */
 typedef struct HosControlGame {
     int64_t (*frame)(void);   /* the game's presents so far */
@@ -70,6 +81,13 @@ typedef struct HosControlGame {
     int (*age)(int adult);
     /* (OoT) with the map: an event playing (a cutscene, a map change's), a map loading, Link the child. 0 before any */
     int (*oot_state)(int *event, int *loading, int *child);
+    /* (OoT) copy the last sampled JSON object into out, 0 before Link's first update.
+       event/loading/age keep their protocol-1 types; frame and t date the sample, not this reply. */
+    int (*oot_sample)(char *out, size_t cap);
+    /* Replace a connection's watch (NULL cancels and forgets its baseline); no guest reads here. */
+    void (*oot_watch)(int slot, const HosControlOotWatch *watch);
+    /* Consume the latest pending sample for that connection, 0 when none. No guest reads or socket I/O. */
+    int (*oot_poll)(int slot, char *out, size_t cap);
 } HosControlGame;
 
 /* Listens on path and serves on a thread of its own. 0 when it could not (logged) */

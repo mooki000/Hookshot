@@ -1,36 +1,21 @@
-/* (hookshot) HOS_OOT_STATE_FILE=<file>: for a script that plays the game through HOS_INPUT_LIVE, a line of JSON with the
-   game's state every HOS_OOT_STATE_EVERY presents (6), so that it knows where Link is and what the game is doing before
-   its next press. Nothing in the game is written.
+/* (hookshot) OoT's read-only samples for the control bridge (docs/control.md).
+   status.game holds the last snapshot; subscribe events:["oot"] samples every n presents, with an optional watch list
+   and changed flags. There is no file channel. HOS_CONTROL unset costs one early return.
 
-   host/hos_main.c calls hos_oot_state_tap from hos_oot_lift_player, the update of Link (nx2/oot_patches.py
-   patch_movement), so lines come only while Link is in a map: none at the title, while a map loads or while the game is
-   paused. A line:
+   The guest reads stay in hos_oot_lift_player, under cheats_lock: Link's update is the point at which the actor,
+   managers and camera are used by the game, not pointers kept for a later socket-thread read. The lock serializes
+   successive guest workers and debug tools; it does not freeze every game thread, so every individual read is also
+   range-checked and missing/non-finite values are null. state_lock hands only copied JSON to the bridge. No lock is
+   held over socket I/O. Samples stop when Link is not updated (title, pause, load); their frame and t expose staleness.
 
-     {"t":512.25,"frame":30144,"map":"KokiriForest_Child","pos":[-20.10,0.00,6.80],"facing":135.0,"camera":120.5,
-      "event":0,"loading":0,"child":1,"life":12,"max_life":12,"rupees":0,"prompt":"Open","music":"BGM_House"}
+   pos is in metres; facing and camera in degrees, 0 toward +z and 90 toward +x; life/max_life in quarter hearts.
+   A watched Enum is "#" followed by the hash of its value's name. Changed Bool/Int/Enum/UInt flags are keyed by hash;
+   the first sample establishes a baseline, at most 32 changes are sent, and more counts any left out.
 
-   t        seconds of the host's clock
-   frame    the game's presents so far (the frame clock of HOS_INPUT_FRAME_CLOCK)
-   map      Sequence_CurrentBanc
-   pos      Link's position, metres (his actor +0x31c, where the debug tools' mark reads it)
-   facing   Link's yaw in degrees, 0 toward +z, 90 toward +x (the Float flag Player_Rot_For_Map keeps it less 180)
-   camera   the gameplay camera's yaw, the same way, from its eye to its target (the view the free camera replaces)
-   event    1 while an event plays: a cutscene, a conversation, a map change's (EventMgr +104, as the debug teleport asks)
-   loading  Sequence_IsLoadingBanc;  child  Sequence_IsChildhood
-   life, max_life  quarter hearts (PlayerStatus.Life, .MaxLife);  rupees  PlayerStatus.CurrentRupee
-   prompt   the A button's action as the game names it (Open, Talk, Crawl...); music  the music playing (BGM_House)
-   A value that cannot be read is null.
-
-   HOS_OOT_STATE_FLAGS=<name>,... adds "flags": those GameData flags by name (the game names a flag by the MurmurHash3 of
-   its name) or as 0x and 8 hex digits, at most 64, each looked up in the Bool, Int, Float, Enum, String64 and UInt
-   containers in that order (an Enum's value is "#" and the hash of the value's name). HOS_OOT_STATE_CHANGES=1 adds
-   "changed": every Bool, Int, Enum and UInt flag whose value differs from the line before, by hash (at most 32 a line,
-   "more" counts the rest), to find out which flags an action sets.
-
-   The flags are read in GameDataMgr's own tables, as oot_gamedata_set_bool (host/hos_main.c) writes the bools: each
-   typed container holds the count of its entries at +8, the entries at +16, and at +24 a table of {u32 hash, u32 entry}
-   probed from hash % its size (+36). */
+   GameDataMgr's typed containers have their count at +8, entries at +16, and a {u32 hash,u32 entry} table at +24,
+   probed from hash % size (+36), as host/hos_main.c's debug tools use them. Both lookup and scan cap the table size. */
 #include "hos.h"
+#include "control.h"
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -115,7 +100,8 @@ static uint64_t state_entry(uint64_t mgr, int kind, uint32_t hash) {
 /* ---- the line */
 
 typedef struct {
-    char text[8192];
+    /* 64 watched strings, each at most 63 bytes escaped to six JSON bytes, plus names, core fields and 32 changes. */
+    char text[HOS_CONTROL_OOT_JSON];
     size_t n;
 } StateLine;
 
@@ -215,53 +201,20 @@ static int state_camera(double *yaw) {
     return 1;
 }
 
-/* ---- the switches */
+/* ---- per-connection watches and baselines ---- */
 
-#define STATE_WATCH_MAX 64
-static struct {
-    uint32_t hash;
-    char name[48];
-} state_watch[STATE_WATCH_MAX];
-static int state_nwatch;
-
-/* HOS_OOT_STATE_FLAGS: names of [A-Za-z0-9_.] (at most 47 characters) or 0x and 8 hex digits, separated by commas */
-static void state_watch_parse(const char *s) {
-    while (s && *s) {
-        const size_t n = strcspn(s, ",");
-        int ok = n > 0 && n < sizeof state_watch[0].name;
-        for (size_t i = 0; ok && i < n; i++) {
-            const char ch = s[i];
-            ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '.';
-        }
-        if (!ok || state_nwatch == STATE_WATCH_MAX) {
-            hos_log("state: flag \"%.*s\" left out (a name of letters, digits, _ and ., or 0x and 8 hex digits; %d at most)",
-                    (int)(n < 64 ? n : 64), s, STATE_WATCH_MAX);
-        } else {
-            char *end = NULL;
-            const unsigned long h = n == 10 && s[0] == '0' && s[1] == 'x' ? strtoul(s + 2, &end, 16) : 0;
-            state_watch[state_nwatch].hash = end == s + n ? (uint32_t)h : state_murmur(s, n);
-            memcpy(state_watch[state_nwatch].name, s, n);
-            state_watch[state_nwatch].name[n] = 0;
-            state_nwatch++;
-        }
-        s += n;
-        if (*s == ',') s++;
-    }
-}
-
-/* ---- HOS_OOT_STATE_CHANGES: the values of the last line, slot by slot of each container's table */
 
 static const int state_tracked[] = {KIND_BOOL, KIND_INT, KIND_ENUM, KIND_UINT};
 #define STATE_TRACKED (int)(sizeof state_tracked / sizeof state_tracked[0])
-static struct {
+typedef struct {
     uint64_t table;
     uint32_t size;
     uint32_t *key, *value;
-} state_seen[STATE_TRACKED];
+} StateSeen;
 
 /* ,"changed":{"0x<hash>":<value>,...} for the flags whose value changed since the last call; a table seen for the first
    time (or moved, or resized: a save loaded) is only remembered */
-static void state_put_changes(StateLine *l, uint64_t mgr) {
+static void state_put_changes(StateLine *l, uint64_t mgr, StateSeen seen[STATE_TRACKED]) {
     int shown = 0, more = 0;
     state_put(l, ",\"changed\":{");
     for (int t = 0; t < STATE_TRACKED; t++) {
@@ -270,24 +223,24 @@ static void state_put_changes(StateLine *l, uint64_t mgr) {
         const uint32_t count = state_u32(box + 8), size = state_u32(box + 36);
         if (!mgr || !entries || !table || !size || size > (1u << 22)) continue;
         int fresh = 0;
-        if (state_seen[t].table != table || state_seen[t].size != size) {
-            uint32_t *key = (uint32_t *)realloc(state_seen[t].key, size * sizeof *key);
-            uint32_t *value = key ? (uint32_t *)realloc(state_seen[t].value, size * sizeof *value) : NULL;
-            if (key) state_seen[t].key = key;
+        if (seen[t].table != table || seen[t].size != size) {
+            uint32_t *key = (uint32_t *)realloc(seen[t].key, size * sizeof *key);
+            uint32_t *value = key ? (uint32_t *)realloc(seen[t].value, size * sizeof *value) : NULL;
+            if (key) seen[t].key = key;
             if (!key || !value) continue;
-            state_seen[t].value = value, state_seen[t].table = table, state_seen[t].size = size;
+            seen[t].value = value, seen[t].table = table, seen[t].size = size;
             fresh = 1;
         }
         for (uint32_t slot = 0; slot < size; slot++) {
             uint32_t pair[2] = {0, 0}, v = 0;
             uint8_t b = 0;
-            state_peek(table + slot * 8ULL, pair, sizeof pair);
-            if (pair[0] && pair[1] < count) {
+            int valid = state_peek(table + slot * 8ULL, pair, sizeof pair) && pair[0] && pair[1] < count;
+            if (valid) {
                 const uint64_t at = entries + (uint64_t)pair[1] * state_kind[kind].stride + state_kind[kind].value;
-                if (kind == KIND_BOOL) v = state_peek(at, &b, 1) ? b : 0;
-                else state_peek(at, &v, 4);
+                if (kind == KIND_BOOL) valid = state_peek(at, &b, 1), v = b;
+                else valid = state_peek(at, &v, 4);
             }
-            if (!fresh && pair[0] && state_seen[t].key[slot] == pair[0] && state_seen[t].value[slot] != v) {
+            if (!fresh && valid && seen[t].key[slot] == pair[0] && seen[t].value[slot] != v) {
                 if (shown < 32) {
                     if (kind == KIND_INT) state_put(l, "%s\"0x%08x\":%d", shown ? "," : "", pair[0], (int)(int32_t)v);
                     else if (kind == KIND_ENUM) state_put(l, "%s\"0x%08x\":\"#%08x\"", shown ? "," : "", pair[0], v);
@@ -297,39 +250,71 @@ static void state_put_changes(StateLine *l, uint64_t mgr) {
                     more++;
                 }
             }
-            state_seen[t].key[slot] = pair[0], state_seen[t].value[slot] = v;
+            seen[t].key[slot] = valid ? pair[0] : 0, seen[t].value[slot] = v;
         }
     }
     state_put(l, "}");
     if (more) state_put(l, ",\"more\":%d", more);
 }
 
-/* ---- the hook: each update of Link (actor: the one whose +0x31c is his position) */
+static SRWLOCK state_lock = SRWLOCK_INIT;
+static StateLine state_latest;
+static struct {
+    HosControlOotWatch watch;
+    uint32_t hashes[HOS_CONTROL_OOT_FLAGS];
+    StateSeen seen[STATE_TRACKED];
+    StateLine line;
+    int active, ready;
+    int64_t last;
+} state_sub[HOS_CONTROL_OOT_CLIENTS];
 
-void hos_oot_state_tap(uint64_t actor) {
-    static int looked, changes;
-    static FILE *out;
-    static int64_t every = 6, last = -1;
-    if (!looked) {
-        looked = 1;
-        const char *path = getenv("HOS_OOT_STATE_FILE");
-        if (!path || !*path) return;
-        out = fopen(path, "w");
-        if (!out) {
-            hos_log("state: could not open %s", path);
-            return;
-        }
-        const char *e = getenv("HOS_OOT_STATE_EVERY");
-        if (e && atoi(e) > 0) every = atoi(e);
-        const char *c = getenv("HOS_OOT_STATE_CHANGES");
-        changes = c && atoi(c) != 0;
-        state_watch_parse(getenv("HOS_OOT_STATE_FLAGS"));
-        hos_log("state: a line every %lld presents to %s (%d flags watched%s)", (long long)every, path, state_nwatch,
-                changes ? ", changed flags" : "");
+int hos_oot_sample(char *out, size_t cap) {
+    AcquireSRWLockShared(&state_lock);
+    const int have = state_latest.n != 0 && state_latest.n < cap;
+    if (have) memcpy(out, state_latest.text, state_latest.n + 1);
+    ReleaseSRWLockShared(&state_lock);
+    return have;
+}
+
+void hos_oot_watch(int slot, const HosControlOotWatch *watch) {
+    if (slot < 0 || slot >= HOS_CONTROL_OOT_CLIENTS) return;
+    AcquireSRWLockExclusive(&state_lock);
+    for (int t = 0; t < STATE_TRACKED; t++) {
+        free(state_sub[slot].seen[t].key);
+        free(state_sub[slot].seen[t].value);
     }
-    if (!out) return;
+    memset(&state_sub[slot], 0, sizeof state_sub[slot]);
+    if (watch) {
+        state_sub[slot].watch = *watch;
+        state_sub[slot].active = 1;
+        state_sub[slot].last = -1;
+        for (int i = 0; i < watch->nflags; i++) {
+            const char *name = watch->flags[i];   /* validated by the bridge */
+            state_sub[slot].hashes[i] = name[0] == '0' && name[1] == 'x' ?
+                (uint32_t)strtoul(name + 2, NULL, 16) : state_murmur(name, strlen(name));
+        }
+    }
+    ReleaseSRWLockExclusive(&state_lock);
+}
+
+int hos_oot_poll(int slot, char *out, size_t cap) {
+    if (slot < 0 || slot >= HOS_CONTROL_OOT_CLIENTS) return 0;
+    AcquireSRWLockExclusive(&state_lock);
+    const int have = state_sub[slot].ready && state_sub[slot].line.n < cap;
+    if (have) {
+        memcpy(out, state_sub[slot].line.text, state_sub[slot].line.n + 1);
+        state_sub[slot].ready = 0;
+    }
+    ReleaseSRWLockExclusive(&state_lock);
+    return have;
+}
+
+/* Each update of Link (actor: the one whose +0x31c is his position). Only this function reads guest memory. */
+void hos_oot_state_tap(uint64_t actor) {
+    if (!hos_control_on) return;
+    static int64_t last = -1;
     const int64_t frame = (int64_t)InterlockedCompareExchange64(&hos_present_count, 0, 0);
-    if (last >= 0 && frame - last < every) return;
+    if (frame == last) return;
     last = frame;
 
     static StateLine line;
@@ -341,33 +326,52 @@ void hos_oot_state_tap(uint64_t actor) {
     float p[3], rot;
     if (state_peek(actor + STATE_LINK_POS, p, sizeof p) && isfinite(p[0]) && isfinite(p[1]) && isfinite(p[2]))
         state_put(l, ",\"pos\":[%.2f,%.2f,%.2f]", p[0], p[1], p[2]);
-    else
-        state_put(l, ",\"pos\":null");
+    else state_put(l, ",\"pos\":null");
     if (state_float(mgr, STATE_ROT, &rot)) state_put(l, ",\"facing\":%.1f", state_wrap(rot + 180.0));
     else state_put(l, ",\"facing\":null");
     double yaw;
     if (state_camera(&yaw)) state_put(l, ",\"camera\":%.1f", yaw);
     else state_put(l, ",\"camera\":null");
     const uint64_t events = state_u64(state_u64(STATE_EVENTMGR_SLOT));
-    if (events) state_put(l, ",\"event\":%d", state_u64(events + 104) ? 1 : 0);
-    else state_put(l, ",\"event\":null");
-    state_put_number(l, mgr, "loading", KIND_BOOL, STATE_LOADING);
-    state_put_number(l, mgr, "child", KIND_BOOL, STATE_CHILD);
+    uint64_t event;
+    state_put(l, ",\"event\":%s", events && state_peek(events + 104, &event, sizeof event) ?
+              (event ? "true" : "false") : "null");
+    int64_t value;
+    state_put(l, ",\"loading\":%s", state_number(mgr, KIND_BOOL, STATE_LOADING, &value) ?
+              (value ? "true" : "false") : "null");
+    state_put(l, ",\"age\":%s", state_number(mgr, KIND_BOOL, STATE_CHILD, &value) ?
+              (value ? "\"child\"" : "\"adult\"") : "null");
     state_put_number(l, mgr, "life", KIND_INT, STATE_LIFE);
     state_put_number(l, mgr, "max_life", KIND_INT, STATE_MAX_LIFE);
     state_put_number(l, mgr, "rupees", KIND_INT, STATE_RUPEES);
     state_put_flag_text(l, mgr, "prompt", STATE_PROMPT);
     state_put_flag_text(l, mgr, "music", STATE_MUSIC);
-    if (state_nwatch) {
-        state_put(l, ",\"flags\":{");
-        for (int i = 0; i < state_nwatch; i++) {
-            state_put(l, "%s\"%s\":", i ? "," : "", state_watch[i].name);
-            state_put_any(l, mgr, state_watch[i].hash);
+    state_put(l, "}");
+
+    AcquireSRWLockExclusive(&state_lock);
+    state_latest.n = l->n;
+    memcpy(state_latest.text, l->text, l->n + 1);
+    for (int slot = 0; slot < HOS_CONTROL_OOT_CLIENTS; slot++) {
+        const HosControlOotWatch *w = &state_sub[slot].watch;
+        if (!state_sub[slot].active || (state_sub[slot].last >= 0 && frame - state_sub[slot].last < w->every)) continue;
+        /* A slow bridge keeps the pending sample, including its changes, until consumed. Sampling resumes after it;
+           no changes are silently overwritten while socket output is backlogged. */
+        if (state_sub[slot].ready) continue;
+        StateLine *s = &state_sub[slot].line;
+        s->n = l->n - 1;   /* append optional fields inside the copied object */
+        memcpy(s->text, l->text, s->n);
+        if (w->nflags) {
+            state_put(s, ",\"flags\":{");
+            for (int i = 0; i < w->nflags; i++) {
+                state_put(s, "%s\"%s\":", i ? "," : "", w->flags[i]);
+                state_put_any(s, mgr, state_sub[slot].hashes[i]);
+            }
+            state_put(s, "}");
         }
-        state_put(l, "}");
+        if (w->changes) state_put_changes(s, mgr, state_sub[slot].seen);
+        state_put(s, "}");
+        state_sub[slot].last = frame;
+        state_sub[slot].ready = 1;
     }
-    if (changes) state_put_changes(l, mgr);
-    state_put(l, "}\n");
-    fputs(l->text, out);
-    fflush(out);
+    ReleaseSRWLockExclusive(&state_lock);
 }

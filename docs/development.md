@@ -116,8 +116,6 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOS_INPUT_LIVE=<file>` | A file the test appends lines of presses to, read every 30 ms; each line's times count from when it is read. A line `!cheat <n>` sends a Cheats page action, `!synclog` logs the NVN syncs (`!dump`, `!shots`, `!rdoc` and `!flasharm` are the WebGPU renderer's) |
 | `HOS_INPUT_FRAME_CLOCK=1` | The script's time runs at 60 game frames a second instead of the wall clock |
 | `HOS_INPUT_EXCLUSIVE`, `HOS_INPUT_BACKGROUND`, `HOS_INPUT_SCRIPT_BACKGROUND` (set) | As above; the last lets every device count while the window is behind another one |
-| `HOS_OOT_STATE_FILE=<file>`, `HOS_OOT_STATE_EVERY=<n>` | What a script steering the game needs before its next press, as a line of JSON every n presents (6), written from the update of Link (so only while he is in a map): the map, his position and facing, the camera's yaw, whether an event (a cutscene, a conversation) plays, loading, age, life, rupees, the A button's action and the music. Read only; the fields are described at the top of `host/oot_state_tap.c` |
-| `HOS_OOT_STATE_FLAGS=<name>,...`, `HOS_OOT_STATE_CHANGES=1` | With the above: those GameData flags by name (or `0x` and the hash), at most 64; every Bool, Int, Enum and UInt flag that changed since the line before, by hash. Direct lookups and change scans ignore tables advertising more than 2^22 slots |
 | `RX_VK_MENU_SCRIPT=<seconds>:<key>,...` | Timed Insert menu keys: `INS`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `ESC`, `ENTER`, `TABL`, `TABR` |
 | `RX_VK_UI_PROMPTS=pad` or `keys` | The menu's button prompts for a controller or the keys, whatever was used last (screenshots) |
 | `RX_VK_UI_GAME_FONT=0` | The menu, the counter and the start-up screen in the included Libertinus, not the game's own font |
@@ -385,8 +383,11 @@ The other rows are 0 Off and 1 On. Some are read at the start, before the menu e
 (`gpu/vk/vk_main.cpp`) and the controls (`host/nn_hid.c`).
 
 `HOS_CONTROL=<socket path>` turns on the control bridge: a local socket a tool or coding agent drives the running game
-through (inputs timed in frames, screenshots, waits for the game's state, the Insert menu's settings, quit), with
-`scripts/hookshot_ctl.py` as its client. Off unless set; see [control.md](control.md).
+through (inputs timed in frames, screenshots, waits, the Insert menu's settings, quit), with `scripts/hookshot_ctl.py`
+as its client. `status.game` holds Link's position/facing, the camera's yaw, event/loading/age, life, maximum life,
+rupees, A-button prompt and music. `subscribe` with `events:["oot"]`, `every`, `flags` and `changes` streams those
+samples and optional watched/changed flags. There is no separate state file; off unless `HOS_CONTROL` is set.
+See [control.md](control.md) for the fields, sampling, bounds and examples.
 
 ## Layout
 

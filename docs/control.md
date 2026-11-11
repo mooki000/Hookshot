@@ -7,7 +7,8 @@ through one connection, with replies. Presses are timed in frames, and every rep
 
 - The game side is `host/control.c`. Hooks: `host/nn_hid.c` (the controller's read), `gpu/vk/vk_replay.cpp` (shots at a
   present), `gpu/vk/vk_menu.cpp` (the Insert menu's settings, through its own setter), `host/hos_thread.c` (log lines),
-  `host/hos_main.c` (the start, and for OoT the current map and the debug teleport), `host/hos_mem.c` (guest memory's
+  `host/hos_main.c` (the start, and for OoT the current map and debug teleport), `host/oot_state_tap.c` (OoT snapshots
+  from Link's update, copied to the bridge thread), `host/hos_mem.c` (guest memory's
   bounds), `host/nn_fs.c` (the save folder), `host/rx_backend.c` (the renderer's side, `MkwVkRenderer`).
 - The client is `scripts/hookshot_ctl.py` (standard library only).
 - Tests: `tests/test_control.py` (the bridge against a fake game) and `tests/test_hookshot_ctl.py` (the client against a
@@ -83,6 +84,10 @@ game's presents so far):
 Requests on one connection may be answered out of order: a `status` sent while a `wait` is pending is answered first.
 Match replies by `id`. Lines with an `"event"` key and no `"ok"` key are subscription events (see `subscribe`).
 
+`protocol:1` allows additive fields, commands and explicitly requested event kinds. Clients ignore unknown fields.
+The OoT snapshot fields and `oot` subscription below are compatible additions: existing fields keep their types and
+the default subscription is unchanged. No second state-file channel is needed.
+
 A client may shut its sending side once its requests are sent (`printf '...\n' | socat - UNIX-CONNECT:<path>`): the
 bridge reads no more from it, ends its subscription, answers what it waits for, and closes the connection once those
 replies are out. (Linux; a Windows pipe has no half-close.)
@@ -140,10 +145,31 @@ version.
 ```
 
 `map` is the game's own name for the map (`Sequence_CurrentBanc`), read on the game's thread with the player's update
-every 250 ms: the last one known, so it stays through loads and menus, and it is `null` until Link was first seen. `game`
-(OoT, read with it) says whether an event is playing (a cutscene, a map change's), whether a map is loading
-(`Sequence_IsLoadingBanc`) and Link's age: `{"event":false,"loading":false,"age":"child"}`, `null` until then. A script
-that steps through places waits for `event` and `loading` to be false before its next step, instead of a log line.
+every 250 ms: the last one known, so it stays through loads and menus, and it is `null` until Link was first seen.
+`game` is OoT's latest read-only snapshot, taken at Link's update; `null` until the first one:
+
+| `game` field | meaning |
+|---|---|
+| `frame`, `t` | Present number at sampling, and host monotonic-clock seconds; `status.frame` is the reply's present |
+| `map` | The sampled map, or `null` if unreadable (top-level `map` retains the last known map) |
+| `pos` | Link's `[x,y,z]` in metres, or `null`; during a cutscene the actor's position, not necessarily his drawn pose |
+| `facing`, `camera` | Link's yaw and the gameplay camera's yaw in degrees, 0 toward +z, 90 toward +x |
+| `event`, `loading`, `age` | Event playing (cutscene/conversation/map change), map loading, `"child"` or `"adult"` |
+| `life`, `max_life`, `rupees` | Current and maximum quarter hearts, rupees |
+| `prompt`, `music` | A-button action and music, as named by the game |
+
+Every unreadable or non-finite field is `null`, not a made-up zero. The guest reads are range-checked and run under
+the debug tools' lock in Link's update, never on the socket thread; only copied snapshots cross threads. This
+serializes Link's workers, not every other game thread, so this is not a whole-game atomic snapshot.
+Samples stop on the title, while paused and wherever Link is not updated. Compare `game.frame` with the reply's
+`frame` before steering: a retained snapshot during a load is not evidence of current control. Scripts wait for
+fresh samples with `event` and `loading` false before their next step.
+
+`status` does not scan all flags. Watched values and changed flags belong to each `oot` subscription below.
+
+The host's JSON-copy callback is `oot_sample` (`hos_oot_sample`), separate from the typed `oot_state` callback used
+by `age`. Both are sampled within the same player-update hook, but the typed map/age sample keeps its existing
+250 ms cadence; it need not have the JSON snapshot's timestamp. The `age` action rechecks the live age when taken.
 
 `state` is a guess from the draws a frame, the way test scripts read the log:
 
@@ -242,9 +268,16 @@ were, and replies `failed`. A `fixed` row replies `failed` too. The reply has th
 **subscribe**: a stream of events on this connection until `unsubscribe` or a disconnect; another `subscribe` replaces
 it. Arguments:
 
-- `events`: any of `present`, `state`, `log` and `map`. The default is `["present", "state"]`.
-- `every`: frames between present events (default 60, 1 to 216000).
+- `events`: any of `present`, `state`, `log`, `map` and `oot`. The default remains `["present", "state"]`.
+- `every`: frames between present/OoT samples (default 60, 1 to 216000).
 - `log`: only log lines that contain this text (it also turns `log` on).
+- `flags`: with `oot`, up to 64 flag names (1 to 47 letters, digits, `_` or `.`) or `0x` and eight hex digits, as an
+  array of strings. Values are looked up in Bool, Int, Float, Enum, String64 and UInt order; absent/unreadable values
+  are `null`. An Enum value is `"#"` followed by eight hex digits (MurmurHash3 of its value's name).
+- `changes`: with `oot`, `true` includes changed Bool/Int/Enum/UInt flags by hash (`false` by default). The first
+  sample establishes a baseline and reports `{}`; at most 32 changes per sample, with `more` counting any left out.
+  Baselines are per connection, reset by replacing the subscription, unsubscribe, disconnect, or a moved/resized
+  table (for example a loaded save). Both direct lookups and change scans reject tables above 2^22 slots.
 
 The events carry `sub`, the subscribe request's `id`:
 
@@ -255,6 +288,21 @@ The events carry `sub`, the subscribe request's `id`:
 < {"event":"map","sub":10,"frame":5900,"map":"HyruleField_Child","from":"KokiriForest_Child"}
 < {"event":"log_dropped","sub":10,"lines":40}
 ```
+
+```
+> {"id":11,"cmd":"subscribe","events":["oot"],"every":6,"flags":["PlayerStatus.Life","0x31ab5580"],"changes":true}
+< {"id":11,"ok":true,"frame":6000,"events":["oot"],"every":6}
+< {"event":"oot","sub":11,"frame":6002,"game":{"t":102.1,"frame":6001,"map":"...","pos":[0,0,0],
+   "facing":0,"camera":0,"event":false,"loading":false,"age":"child","life":12,"max_life":12,"rupees":0,
+   "prompt":"...","music":"...","flags":{"PlayerStatus.Life":12,"0x31ab5580":12},"changed":{}}}
+```
+
+`oot` is a sampled event, unlike `state` (a change in the draw-count guess). Its first sample comes at the next
+Link update, then no sooner than `every` presents after the preceding sample. Its nested `game.frame` dates the
+sample; the envelope's `frame` is the bridge's current present. No repeated old samples are emitted during a pause.
+A pending sample is retained until the bridge takes it; if the bridge is delayed, sampling resumes afterwards rather
+than overwriting its changes. Frame gaps can therefore exceed `every`. A client that stops reading is still dropped
+at the bridge's output limit. Flag scanning is off unless that connection asks for it and stops when it leaves.
 
 **teleport** (OoT): the Debug tab's teleport, by destination: `to`, the destination's index or one of its maps' names
 (any case). Without `to`, the destinations: `{"destinations":[{"index":0,"child":"KokiriForest_Child","adult":
@@ -390,10 +438,9 @@ address past 2^53, which a JSON number cannot hold exactly; no sign, no octal). 
 < {"id":31,"ok":true,"frame":5001,"wrote":4,"addr":4300000000}
 ```
 
-TODO: named game values (scene and room id, Link's position, health, rupees, ...) through `mem get NAME` and a
-`symbols` command: planned, once addresses are located and verified for this build. `symbols` replies `unavailable` for
-now. Slot details from caption.sav or progress.sav beyond the scene and the picture (the player's name, hearts, play
-time): planned.
+Named read-only game values (Link's position, life, rupees and flags) are available through `status`/`subscribe`,
+without enabling arbitrary guest-memory access. `symbols` still replies `unavailable`. Slot details from caption.sav
+or progress.sav beyond the scene and picture (the player's name, hearts, play time) are not served.
 
 ## The client
 
@@ -418,6 +465,7 @@ python -I scripts/hookshot_ctl.py teleport 1 --arrive 30                # sent (
 python -I scripts/hookshot_ctl.py age adult --arrive 30                 # the Debug tab's Switch age, then reloaded
 python -I scripts/hookshot_ctl.py release                               # this client's inputs and abandoned ones (--all)
 python -I scripts/hookshot_ctl.py watch --events present,state --log "hid:"
+python -I scripts/hookshot_ctl.py --json watch --events oot --every 6 --flags PlayerStatus.Life,0x31ab5580 --changes
 python -I scripts/hookshot_ctl.py raw '{"cmd": "wait", "event": "frame", "frame": 9000}'
 python -I scripts/hookshot_ctl.py mem read 0x80000000 8               # needs HOS_CONTROL_MEM=ro or rw
 python -I scripts/hookshot_ctl.py mem read 0x1000000000 16 --format u32
@@ -440,7 +488,7 @@ sets `XDG_DATA_HOME` for the run, so it plays from saves of its own. `--env NAME
 - **The first `option_get` or `option_set`** after start can wait, on the bridge's thread, for the start-up check of
   the upscalers (NVIDIA's NGX start: about 3 s). The game does not wait for it; other replies to every client wait
   that long.
-- **Named game values** (`mem get NAME`, `symbols`) are not served yet (see Guest memory).
+- **OoT samples** stop when Link is not updated. They contain no actor list and do not turn `symbols` into a supported command.
 - `HOS_CONTROL_MEM=rw` writes were checked against the game's memory (written, read back, put back), not against the
   picture the GPU draws from a written value.
 
@@ -451,5 +499,7 @@ Linux, the named pipe on Windows (the CI's windows-2022 runner). On Windows it a
 another first instance of the name and a second bridge on it are refused, and the DACL, read back through a client's
 handle, is protected with a single ACE for the current user. `tests/test_hookshot_ctl.py` drives the client against a
 fake bridge on the same transports.
+`tests/test_oot_state_tap.py` uses bounded fake guest memory and the real bridge transport for sampled values,
+per-connection watches/changes, cadence, nulls, table limits, hashes, subscription lifecycle and wiring.
 
 What is not tested is under Known limits.

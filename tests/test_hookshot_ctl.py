@@ -1,10 +1,12 @@
 """scripts/hookshot_ctl.py, the control bridge's client, against a tiny fake game: a Python stand-in for the executable
 that serves the bridge's protocol on $HOS_CONTROL (docs/control.md) and writes down each request. The commands' requests
 and plain output, --json, exit codes (an error reply, a timeout, no game), watch, launch (which starts the stand-in as a
-game folder's hookshot and waits for its socket), and the mem commands. Linux only: a Unix socket.
+game folder's hookshot and waits for its socket), the mem commands, and complete OoT status/watch snapshots.
+Linux uses a Unix socket; Windows uses the named pipe (launch is Linux-only).
 
-python -I -B tests/test_hookshot_ctl.py
+python -I -B tests/test_hookshot_ctl.py [--source-root OTHER_CHECKOUT]
 """
+import argparse
 import json
 import os
 import subprocess
@@ -23,6 +25,9 @@ path = os.environ["HOS_CONTROL"]
 log = open(os.environ["FAKE_LOG"], "a", buffering=1)
 log.write(json.dumps({"cmd": "_start", "control": path, "xdg": os.environ.get("XDG_DATA_HOME")}) + "\n")
 frame = [100]
+game_state = [{"t": 6.567, "frame": 94, "map": "KokiriForest_Child", "pos": [-20.1, 0.0, 6.8],
+               "facing": 108.6, "camera": 45.0, "event": False, "loading": False, "age": "child",
+               "life": 12, "max_life": 16, "rupees": 7, "prompt": "Open", "music": "Test_\u001b[2J\"\\\u0080"}]
 if os.name == "nt":   # a named pipe, through ctypes: one synchronous handle a connection, read then write, never both at once
     import ctypes
     from ctypes import wintypes
@@ -86,7 +91,9 @@ def serve(f):
         r = {"id": rid, "ok": True, "frame": frame[0]}
         if cmd == "status":
             r.update(protocol=1, fps=59.9, state="play", draws=2400.0, window={"width": 1280, "height": 720}, version="fake",
-                     map="KokiriForest_Child")
+                     map="KokiriForest_Child", game=game_state[0])
+        elif cmd == "fixture_game":   # test-only: change what the fake bridge reports, without restarting launch
+            game_state[0] = req["game"]
         elif cmd == "teleport":
             if req.get("to") is None:
                 r.update(destinations=[{"index": 0, "child": "KokiriForest_Child", "adult": "KokiriForest_Adult"},
@@ -130,9 +137,22 @@ def serve(f):
         elif cmd == "mem_write":
             r.update(wrote=len(bytes.fromhex(req["hex"])), addr=req["addr"])
         elif cmd == "subscribe":
+            if ("flags" in req or "changes" in req) and "oot" not in req.get("events", []):
+                f.write((json.dumps(dict(r, ok=False, error="bad_request", message="flags and changes need events:[oot]")) + "\n").encode())
+                continue
             f.write((json.dumps({"id": rid, "ok": True, "frame": frame[0], "events": req.get("events")}) + "\n").encode())
             for i in range(5):
-                f.write((json.dumps({"event": "present", "sub": rid, "frame": frame[0] + i, "fps": 60.0, "state": "play"}) + "\n").encode())
+                if "oot" in req.get("events", []):
+                    g = dict(game_state[0])
+                    g["frame"] = 94 + i * req.get("every", 60)
+                    if "flags" in req:
+                        g["flags"] = {name: {"Test.Flag": 1, "0x00000110": 1}.get(name) for name in req["flags"]}
+                    if req.get("changes"):
+                        g["changed"] = {} if not i else {"0x12345678": i}
+                    event = {"event": "oot", "sub": rid, "frame": frame[0] + i * req.get("every", 60), "game": g}
+                else:
+                    event = {"event": "present", "sub": rid, "frame": frame[0] + i, "fps": 60.0, "state": "play"}
+                f.write((json.dumps(event) + "\n").encode())
             continue
         elif cmd == "quit":
             f.write((json.dumps(dict(r, quitting=True)) + "\n").encode())
@@ -235,9 +255,37 @@ class HookshotCtl(unittest.TestCase):
 
     def test_status(self):
         r = ctl("status", env=self.env, check=0)
-        self.assertRegex(r.stdout, r"^frame \d+  fps 59\.9  state play  draws 2400  window 1280x720  map KokiriForest_Child  fake")
+        lines = r.stdout.splitlines()
+        self.assertRegex(lines[0], r"^frame \d+  fps 59\.9  state play  draws 2400  window 1280x720  map KokiriForest_Child \(child\)  fake$")
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].startswith("game   "))
+        game = json.loads(lines[1][7:])
+        self.assertEqual(game, {"t": 6.567, "frame": 94, "map": "KokiriForest_Child", "pos": [-20.1, 0.0, 6.8],
+                                "facing": 108.6, "camera": 45.0, "event": False, "loading": False, "age": "child",
+                                "life": 12, "max_life": 16, "rupees": 7, "prompt": "Open", "music": "Test_\u001b[2J\"\\\u0080"})
+        self.assertNotIn("\x1b", r.stdout)   # control text is escaped, never terminal input
         r = ctl("--sock", self.sock, "--json", "status", check=0)
-        self.assertEqual(json.loads(r.stdout)["state"], "play")
+        result = json.loads(r.stdout)
+        self.assertEqual(result["state"], "play")
+        self.assertEqual(result["protocol"], 1)
+        self.assertEqual(result["game"], game)
+        self.assertGreater(result["frame"], game["frame"])   # reply and sample presents are distinct
+
+    def test_status_null_and_partial_game(self):
+        original = json.loads(ctl("--json", "status", env=self.env, check=0).stdout)["game"]
+        try:
+            for game in (None, dict.fromkeys(original, None)):
+                ctl("raw", json.dumps({"cmd": "fixture_game", "game": game}), env=self.env, check=0)
+                text = ctl("status", env=self.env, check=0).stdout
+                self.assertIn("map KokiriForest_Child", text)
+                result = json.loads(ctl("--json", "status", env=self.env, check=0).stdout)
+                self.assertEqual(result["game"], game)
+                if game is None:
+                    self.assertEqual(len(text.splitlines()), 1)
+                else:
+                    self.assertEqual(json.loads(text.splitlines()[1][7:]), game)
+        finally:
+            ctl("raw", json.dumps({"cmd": "fixture_game", "game": original}), env=self.env, check=0)
 
     def test_inputs(self):
         r = ctl("press", "A+B", "--frames", "8", "--exclusive", env=self.env, check=0)
@@ -373,6 +421,39 @@ class HookshotCtl(unittest.TestCase):
         ctl("watch", "--count", "1", "--events", "present", "--log", "x", env=self.env, check=0)
         self.assertEqual(self.last("subscribe")["events"], ["present", "log"])
 
+    def test_watch_oot(self):
+        r = ctl("--json", "watch", "--events", "oot", "--every", "6", "--flags", "Test.Flag,0x00000110",
+                "--changes", "--count", "3", env=self.env, check=0)
+        request = self.last("subscribe")
+        self.assertEqual((request["events"], request["every"], request["flags"], request["changes"]),
+                         (["oot"], 6, ["Test.Flag", "0x00000110"], True))
+        events = [json.loads(line) for line in r.stdout.splitlines()]
+        self.assertEqual(len(events), 3)
+        self.assertEqual([e["game"]["frame"] for e in events], [94, 100, 106])
+        for event in events:
+            self.assertEqual((event["event"], event["sub"]), ("oot", request["id"]))
+            self.assertGreaterEqual(event["frame"], event["game"]["frame"])
+            self.assertEqual(event["game"]["flags"], {"Test.Flag": 1, "0x00000110": 1})
+        self.assertEqual([e["game"]["changed"] for e in events], [{}, {"0x12345678": 1}, {"0x12345678": 2}])
+        r = ctl("watch", "--events", "oot", "--count", "2", env=self.env, check=0)
+        request = self.last("subscribe")
+        self.assertEqual(request["every"], 60)
+        self.assertNotIn("flags", request)
+        self.assertNotIn("changes", request)
+        self.assertEqual(len(r.stdout.splitlines()), 2)
+        self.assertNotIn("\x1b", r.stdout)
+        for line in r.stdout.splitlines():
+            self.assertTrue(line.startswith("game   "))
+            game = json.loads(line[7:])
+            self.assertNotIn("flags", game)
+            self.assertNotIn("changed", game)
+            self.assertEqual(game["pos"], [-20.1, 0.0, 6.8])
+        ctl("watch", "--events", "oot", "--log", "x", "--count", "1", env=self.env, check=0)
+        self.assertEqual(self.last("subscribe")["events"], ["oot", "log"])
+        r = ctl("watch", "--events", "present", "--flags", "Test.Flag", "--count", "1", env=self.env, check=1)
+        self.assertIn("bad_request", r.stderr)
+        ctl("watch", "--every", "six", env=self.env, check=2)
+
     def test_saves_and_slots(self):
         r = ctl("saves", env=self.env, check=0)
         self.assertIn("(account.sav yes, option.sav yes)", r.stdout)
@@ -473,4 +554,8 @@ class HookshotCtl(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--source-root", type=Path, default=ROOT)
+    options, remaining = parser.parse_known_args()
+    CTL = options.source_root.resolve() / "scripts" / "hookshot_ctl.py"
+    unittest.main(argv=[sys.argv[0]] + remaining)
