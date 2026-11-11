@@ -380,6 +380,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom (on the Controls page) | Nintendo (Def) |
 | | Button prompts | Auto, Switch, Xbox, PlayStation 4, PlayStation 5, Steam Deck (on the Controls page) | Auto |
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
+| | Walk mode | Hold, Toggle | Hold |
+| | Walk speed | 15% to 90%, in steps of 5 | 45% |
 | | Controls | Opens the Controls page | |
 | | Menu shortcut | Insert or F1; F1 only; Insert, F1 or Esc | Insert, F1 or Esc |
 | | Compact menu key | Right Shift, Right Ctrl | Right Shift |
@@ -567,11 +569,17 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   action on (the first of its two), and WASD and the mouse for the sticks; the ocarina's notes and the pause menu's
   controller keep the Switch's buttons.
 - **Save my pipeline list** (Debug tab, under Developer): see [Send your pipeline list](#send-your-pipeline-list).
+- **Walk mode** and **Walk speed:** on the keyboard the movement keys push the stick all the way, so Link runs. While the
+  Walk key is held (<kbd>Caps Lock</kbd> unless you change it on the Controls page), they tilt it only Walk speed of the
+  way, and he walks; with Walk mode on Toggle, one press walks and the next runs again. 15% is his slowest walk, 45% to
+  50% his fastest; from 55% up he jogs, then runs. Controllers, the mouse and the camera keys are not changed. Caps Lock
+  still switches capitals on and off in other programs at each press: bind another key if that bothers you.
 
 ### Controls
 
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move
-and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the camera.
+(hold <kbd>Caps Lock</kbd> to walk) and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the
+camera.
 With the default keyboard bindings, press <kbd>E</kbd> to select **New Game** on the title screen.
 
 **Mouse in the game's menus (Windows):** the title screen and its file list, the pause menu, the Key Items, Threads of
@@ -592,7 +600,7 @@ anything SDL reports as a Switch Pro Controller or Joy-Con, and that includes th
 (8BitDo, GameSir and others; SDL gives them Nintendo's ids). Some of them may turn it into weak rumble or none: set
 `HOS_HD_RUMBLE=0` to give them the plain motor rumble.
 
-To change which gamepad button or key presses a Switch button, or which keys move and turn the camera, open the
+To change which gamepad button or key presses a Switch button, or which keys move, walk and turn the camera, open the
 Controls tab's Controls page. Choose a row and a column (Gamepad or Keyboard), press <kbd>Enter</kbd> (or the bottom
 face button), then the new button or key. <kbd>Esc</kbd> cancels, <kbd>Delete</kbd> clears it, and Reset to defaults
 puts them all back. A gamepad button taken from another Switch button swaps with it. The page saves them in
@@ -616,8 +624,8 @@ key_a=69,13
 [Windows key codes](https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes) in decimal (69 is
 <kbd>E</kbd>, 13 <kbd>Enter</kbd>), 0 none; the mouse's buttons are 1 (left), 2 (right), 4 (middle), 5 and 6 (side
 buttons), and count while the mouse is captured. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
-`rs` `left` `up` `right` `down`, for keys only the left stick's and the camera's directions: `move_up`
-`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right`, and the ocarina's five notes,
+`rs` `left` `up` `right` `down`, for keys only the left stick's and the camera's directions and walking: `move_up`
+`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right` `walk`, and the ocarina's five notes,
 which also take a `pad_` line: `note_l` `note_r` `note_a` `note_y` `note_x`. A button the file leaves out keeps
 its default.
 
