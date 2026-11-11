@@ -112,6 +112,18 @@ int main(void) {
     w32(flag(mgr, KIND_ENUM, H("Step.Test")), 0xdeadbeefu);
     w32(flag(mgr, KIND_UINT, H("Test.Unsigned")), 3000000000u);
 
+    /* (a table that says it has more than 2^22 slots is a torn or garbage read: no lookup walks it, whatever its
+       first slot holds) */
+    const uint64_t bounded = flag(mgr, KIND_UINT, 1);
+    const uint64_t box = mgr + state_kind[KIND_UINT].at;
+    const uint32_t real_size = r32(box + 36);
+    w32(bounded, 42);
+    w32(box + 36, 1u << 22);
+    CHECK(state_entry(mgr, KIND_UINT, 1) == bounded - state_kind[KIND_UINT].value);
+    w32(box + 36, (1u << 22) + 1);
+    CHECK(state_entry(mgr, KIND_UINT, 1) == 0);
+    w32(box + 36, real_size);
+
     const uint64_t events = alloc(128), eholder = alloc(16);
     w64(STATE_EVENTMGR_SLOT, eholder), w64(eholder, events), w64(events + 104, 1);
 

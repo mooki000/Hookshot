@@ -103,7 +103,7 @@ static uint32_t state_murmur(const char *s, size_t n) {
 static uint64_t state_entry(uint64_t mgr, int kind, uint32_t hash) {
     const uint64_t box = mgr + state_kind[kind].at, entries = state_u64(box + 16), table = state_u64(box + 24);
     const uint32_t count = state_u32(box + 8), size = state_u32(box + 36);
-    if (!mgr || !entries || !table || !size || !hash) return 0;
+    if (!mgr || !entries || !table || !size || size > (1u << 22) || !hash) return 0;
     for (uint32_t probe = 0, slot = hash % size; probe < size; probe++, slot = slot + 1 == size ? 0 : slot + 1) {
         uint32_t pair[2];
         if (!state_peek(table + slot * 8ULL, pair, sizeof pair) || !pair[0]) return 0;
