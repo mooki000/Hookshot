@@ -36,6 +36,8 @@ fixture = r'''
 #include <initializer_list>
 #include <mutex>
 #include "hookshot_env.h"
+#include "gpu_wait_stats.h"
+namespace gpu_wait_stats = mkwvk::gpu_wait_stats;
 using VkSwapchainKHR=uint64_t;using VkLatencyMarkerNV=int;
 constexpr uint64_t VK_NULL_HANDLE=0;
 constexpr int VK_SUCCESS=0,VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV=1,
@@ -152,7 +154,8 @@ int main(){
 with tempfile.TemporaryDirectory(prefix='reflex-swapchain-') as tmp:
     cpp, exe = Path(tmp)/'fixture.cpp', Path(tmp)/'fixture.exe'
     cpp.write_text(fixture)
-    subprocess.run([a.cxx, '-std=c++20', '-O1', '-I' + str(a.source/'gpu/vk/compat'), str(cpp), '-o', str(exe)], check=True)
+    subprocess.run([a.cxx, '-std=c++20', '-O1', '-I' + str(a.source/'gpu/vk/compat'),
+                    '-I' + str(Path(__file__).resolve().parents[1]/'gpu/vk'), str(cpp), '-o', str(exe)], check=True)
     # (=on keeps the tags: an atoi(...) == 0 reading took it as off; =0 turns them off)
     rc = subprocess.run([str(exe)], env=dict(os.environ, RX_VK_REFLEX_SUBMIT_IDS='on')).returncode
     if rc == 0:
