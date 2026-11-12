@@ -456,6 +456,8 @@ def patch_movie_frames(s):
 #   waits on the same note until a slow frame lets the counter move (issue 2668).
 # - f_832b6840, the eight-note recording (mode 10): the same elapsed counter is reset between notes and gaps, then saved
 #   as their lengths. Cut to 0, their timing is lost even though the eight pitches are recorded. The mode-13 cut is separate.
+# - f_832b2690, recording completion: after the eighth note starts, it times that note and writes its final delay into
+#   the same recording. Its unsigned cut must carry too, or the saved eighth note has zero length and is not played.
 # hos_frame_whole carries the fractions per counter while the frames' own time is the step, so each moves at the game's rate;
 # otherwise it cuts as the game does. A site is added here once it is seen to misbehave in game. (A site's function, its code to
 # replace, and the counter's address for its remainder.)
@@ -483,6 +485,9 @@ WHOLE_SITES = (
      "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);@"
      "    { uint64_t _a=c->x[10],_b=((uint64_t)(uint32_t)(((uint32_t)(c->x[8])) << 0)),_r=_a+_b; _r&=0xFFFFFFFFULL; c->x[8]=_r; }@",
      "c->x[9]"),
+    ("void f_832b2690(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);@",
+     "c->x[19] + 0x265fc"),
 )
 WHOLE_SITES = tuple((h.replace("@", "\n"), o.replace("@", "\n"), k) for h, o, k in WHOLE_SITES)
 WHOLE_MARK = "/* (the step's whole frames: nx2/oot_patches.py) */"

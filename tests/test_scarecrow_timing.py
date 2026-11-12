@@ -27,6 +27,8 @@ LIFTED = ('#define _CRT_SECURE_NO_WARNINGS\n#include "a64.h"\n'
           '    } else {\n' + CUT + ADD % 10 +
           '    }\n    c->counter = (uint32_t)c->x[8];\n}\n'
           'void f_832b32b0(Ctx *__restrict A64_NOESC c) {\n' + CUT +
+          '    c->counter += (uint32_t)c->x[8];\n}\n'
+          'void f_832b2690(Ctx *__restrict A64_NOESC c) {\n' + CUT +
           '    c->counter += (uint32_t)c->x[8];\n}\n')
 
 HEADER = r'''#pragma once
@@ -77,7 +79,8 @@ static void sc_tick(Ctx *c, int rate, int recording) {
     c->x[9] = sc_counter;
     c->x[10] = c->counter;
     sc_carry = rate > 60;
-    if (recording) f_832b6840(c);
+    if (recording == 2) f_832b2690(c);
+    else if (recording) f_832b6840(c);
     else f_832b32b0(c);
 }
 int main(void) {
@@ -88,12 +91,12 @@ int main(void) {
             Ctx c = {0};
             uint32_t melody_ticks = 0;
             const int before = sc_failures;
-            /* Eight 0.1-second holds, separated by seven 0.4-second gaps. */
+            /* Eight 0.1-second holds and seven 0.4-second gaps; completion times the eighth hold. */
             for (int event = 0; event < 15; ++event) {
                 const int expected = event % 2 ? 24 : 6;
                 c.counter = 0;
                 for (int f = 0; f < expected * rates[r] / 60; ++f)
-                    sc_tick(&c, rates[r], 1);
+                    sc_tick(&c, rates[r], event == 14 ? 2 : 1);
                 CHECK(c.counter == (uint32_t)expected);
                 melody_ticks += c.counter;
             }
@@ -110,17 +113,17 @@ int main(void) {
                    rates[r], rates[p], before == sc_failures ? "PASS" : "FAIL", melody_ticks, frames);
         }
     }
-    /* A sub-tick remainder survives a counter reset and is shared by its two update sites. */
+    /* A sub-tick remainder survives a counter reset and is shared by all three update sites. */
     memset(&sc_fractions, 0, sizeof sc_fractions);
     Ctx split = {0};
     sc_tick(&split, 240, 1);
     CHECK(split.counter == 0);
     split.counter = 0;
-    sc_tick(&split, 240, 1);
+    sc_tick(&split, 240, 2);
     CHECK(split.counter == 0);
     sc_tick(&split, 240, 0);
     CHECK(split.counter == 0);
-    sc_tick(&split, 240, 0);
+    sc_tick(&split, 240, 2);
     CHECK(split.counter == 1);
     /* The other recording branch's cut is outside the eight-note change. */
     Ctx other = {0};
@@ -157,7 +160,7 @@ def main():
         print("compiler:", " ".join(command), flush=True)
         subprocess.run(command, check=True)
         subprocess.run([str(binary)], check=True, timeout=30)
-    assert changed == 2, "the two eight-note conversions must each be patched once"
+    assert changed == 3, "all three eight-note conversions must each be patched once"
     assert patches.patch_whole_frames(source) == (source, 0), "the patch must be idempotent"
     assert (CUT + ADD % 12) in source, "the other recording cut must be preserved"
 
