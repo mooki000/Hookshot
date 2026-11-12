@@ -53,7 +53,8 @@ An already admitted driver can instead keep its admission alive around the serve
 ## Tools
 
 All tools have result models and read-only/destructive hints. These hints describe effects; they are not permissions.
-`run` is a returned `run_id` or a run folder. Omit it to use the most recently launched or attached run.
+`run` is a returned `run_id` or a folder under the configured root; relative folders are relative to that root.
+Omit it to use the most recently launched or attached run.
 Results preserve the session or bridge's plain data, under `run` or `reply`; status keeps both `run` and `bridge`.
 
 | Tool | Effect | What it does |
@@ -74,7 +75,6 @@ Results preserve the session or bridge's plain data, under `run` or `reply`; sta
 | `teleport` | Changes game state | Without `to`, list destinations; otherwise request a destination and then wait for its map. |
 | `age` | Changes game state | Request `child` or `adult`, or toggle; then wait for reload completion. |
 | `saves` | Read-only | Read the mounted save folder and slot metadata; no force-save, editing or checkpoint validation. |
-| `slots` | Read-only | Return the same save-slot metadata as the command-line client's slots view. |
 | `logs` | Read-only | Read a tail (`lines`) or bytes from `since`; return a byte cursor and truncation flags. |
 | `expect_log` | Read-only | Wait for literal, case-sensitive `text` after a required `since` byte cursor. |
 | `stop` | Ends a process | Return the owner's exact quit/exit receipt; force is opt-in with `terminate=true`; not save-safe. |
@@ -111,9 +111,10 @@ These are resource templates, advertised by `resources/templates/list`.
 | `hookshot://runs/{run_id}/log` | JSON tail of 100 lines, at most 65,536 source bytes, with its cursor. |
 | `hookshot://runs/{run_id}/last-screenshot` | Last acknowledged PNG in the run's shots folder, at most 4 MiB. |
 
-Images are files first. A screenshot's explicit relative path is relative to the run folder; an absolute path is
-used as supplied and can replace an existing file. Inline reading requires the bridge to return the requested path.
-The image resource refuses paths outside the run's shots folder; use the returned file path for those captures.
+Images are files first. A screenshot path must be relative to the run folder, with no `..` or link outside it;
+absolute paths are refused. Existing files inside the run can be replaced. Inline reading requires the bridge to
+return the requested path. The image resource only reads the run's shots folder; use the returned file path for
+captures elsewhere inside the run.
 A missing or oversized image gives an error. There is no automatic resize and no desktop capture.
 
 ## A worked session
@@ -208,10 +209,15 @@ This cutover is deliberately not full parity with #1025. No old capability disap
 
 ## Trust and lifetime
 
-**It runs as you and trusts its MCP host.** This is a local same-user tool, not a sandbox. The configured executable,
-environment and admission wrapper run with your authority. Tool-supplied game/save/run/screenshot paths also carry
-that authority. Use only trusted hosts, agents and manifests. Do not expose it to an untrusted client. There is no
-arbitrary-shell tool, network transport, memory-write tool, package installer or login operation.
+**It runs as you and trusts its MCP host.** Screenshot paths must be relative, contain no `..`, and resolve inside
+the selected run, with no links out.
+When `--game-dir` is configured, a tool cannot change it; without it, the caller chooses what is executed.
+Run folders must resolve under the configured root, while a save source may be anywhere readable and is only read
+and copied.
+With these rules the server still runs with the user's full authority and is not a sandbox. Its configured
+executable, environment and admission wrapper carry that authority. Use only trusted hosts, agents and manifests;
+do not expose it to an untrusted client. There is no arbitrary-shell tool, network transport, memory-write tool,
+package installer or login operation.
 
 The session supervisor, not the MCP connection, owns the game. End of input or server exit does not kill launched or
 attached runs; their manifests remain discoverable. Explicitly stop your disposable runs before ending the client.
