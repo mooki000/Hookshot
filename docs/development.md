@@ -167,6 +167,78 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_PRESENT_THREAD=1` | On (off by default: the game's thread presents). Where the device has a second queue that can present to the window (a second queue of the replay's family, else a compute family's): each present is made on a thread and queue of its own once the frame's copy into the window is done, and the game's thread goes on at once (with NVIDIA's driver on Wayland the present otherwise waits ~2.4 ms a frame for the GPU there). One present out at most; under V-Sync On (FIFO) with `VK_KHR_present_wait`, until it is shown. The log has the fence's and the present's time (and how long after it the frame was shown) every 600 presents |
 | `HOS_PGO=<file>` | In a run of an `RX_PGO=gen` build: `<file>.reset` clears the counters, `<file>.dump` writes them to `<file>`. It is read before `hookshot_env.txt`, so set it in the environment |
 
+#### Sampled performance log
+
+The optional system monitor writes `perf.csv` for a test or a bug report without changing the FPS counter.
+Set its output in the environment (or an explicitly selected `HOS_ENV_FILE`), not the shared `hookshot_env.txt`.
+It never overwrites a file: an existing `perf.csv` becomes `perf-1.csv`, then `perf-2.csv`. A directory argument
+uses `perf.csv` inside it. Directories are not created; a denied or invalid path logs one refusal and leaves sampling off.
+
+| Switch | What it does |
+|---|---|
+| `RX_VK_PERF_LOG=<file-or-directory>` | Enables the sampled file. Unset: off, with no sampler thread, sensor reads or optional library load. An empty supplied path is invalid |
+| `RX_VK_PERF_FIELDS=<names>` | Every reading individually: comma-separated exact column names below, or `all,-name,-name`. Default `all`. Disabled and unavailable values are `na` |
+| `RX_VK_PERF_INTERVAL_MS=<100..60000>` | Sample interval, in whole milliseconds (1000). A slow sensor does not queue missed samples |
+| `RX_VK_PERF_WINDOW_MS=<100..60000>` | Trailing window for frame statistics, in whole milliseconds (5000) |
+| `RX_VK_PERF_COMPACT=0` or `1` | Also writes each available reading in one `vk: perf:` line (off). Missing readings are omitted |
+| `RX_VK_PERF_UNITS=iec` or `si` | Compact memory units: MiB/GiB (default) or MB/GB. File units never change |
+
+Values are strict: a misspelled name, empty list element, trailing number text, unknown unit or boolean other than
+`0`/`1` logs a diagnostic and disables the monitor. This does not change other switches' usual on/off rules.
+Neither Off nor any existing FPS-counter level enables this monitor. While off, the present path only checks its
+inactive flag; no additional clocks, counters, memory allocation, library calls or file work run. While enabled,
+frames enter a fixed, nonblocking queue. A full queue makes frame statistics unavailable, not silently incomplete.
+The low-priority worker reads sensors, computes statistics, formats and **flushes every completed row**. It never
+makes the frame thread wait for a sensor or a file. Flushing is not an fsync or a guarantee against power loss.
+At explicit close, `vk: perf: sampler CPU ... ms` reports this worker's own CPU time, including final statistics;
+it is not the process's CPU time or an on/off frame-time comparison. The thread is named `perf-sampler` where supported.
+
+The first line is `# hookshot_perf,1,` followed by column names. The second is
+`# started,<UTC ISO8601 time>,<Hookshot version>`; after the first, readers ignore lines starting with `#`.
+Rows are UTF-8 CSV, with quoted strings, decimal dots, and `na` for disabled/unavailable numbers. Values are finite;
+invalid values (including 0/255-degree temperatures or device use above 100%) get `na` and one reason in the main log.
+The common columns are `kind,sample,monotonic_ns,elapsed_s,game_frame,renderer_present,frame,time_s,clock,thread_name,event,detail`.
+Each interval writes a `sample`. Explicit renderer close writes `capture_end` and a whole-capture `summary`;
+the first observed frame supplies `capture_start`. A crash, SIGKILL or timeout can leave no final summary.
+`monotonic_ns` is the OS monotonic clock, `elapsed_s` starts when the monitor starts. `game_frame` counts game
+presents; `renderer_present` is the replay's count used in screenshot names. With `RX_VK_FRAME_LOG`, `frame,time_s`
+are that file's index and origin, and statistics use its retained three-decimal millisecond intervals.
+Without that file those join columns are `na`. The clock is `headless-renderer` (CPU offscreen-submit intervals,
+not display timing) or `swapchain`; neither is a GPU-completion or input-latency measurement.
+
+| Individually selectable columns (in file order) | Units and source |
+|---|---|
+| `mean_ms,mean_fps,low_1_fps,low_0_1_fps,p50_ms,p95_ms,p99_ms,max_ms` | Completed positive frame intervals in the trailing window. Mean FPS is 1000/mean interval; lows are 1000/mean of the slowest ceil(1% or 0.1%), at least one. Percentiles are nearest rank, without interpolation |
+| `over16_7,over20,over25,over50,over100,frames` | Counts of intervals strictly above each millisecond threshold, then the window's interval count. A 16.7-ms threshold includes normal 60-fps pacing jitter |
+| `gpu_use_pct,gpu_temp_c,gpu_power_w,gpu_fan_pct,gpu_clock_mhz,gpu_throttle_mask,gpu_memory_used_bytes` | Whole selected GPU, including other programs. NVIDIA NVML if installed; Linux AMD sysfs where exposed; Intel's exposed clock only. Throttle reasons are NVIDIA's bit mask, not a bottleneck diagnosis |
+| `vram_used_bytes,vram_budget_bytes,texture_used_bytes,texture_budget_bytes,gpu_ms` | Latest renderer-owned budget snapshot (VK_EXT_memory_budget, never an allocation-only fallback called a driver budget), texture use/budget, completed GPU timestamp time per replayed frame. Timestamps can arrive late and exclude the present blit |
+| `cpu_process_pct,cpu_thread_pct,rss_bytes,commit_bytes,ram_available_bytes,swap_used_bytes,disk_read_bytes` | Process CPU (100%=one logical CPU), busiest sampled thread (name in `thread_name`), process RSS/working set, Windows private commit, PC available RAM, Linux swap used, cumulative process read bytes |
+| `cpu_temp_c,cpu_clock_mhz,battery_pct,ac_online` | Linux named package temperature, highest readable CPU scaling clock, one unambiguous battery's charge and AC state. No battery or unsupported system means `na` |
+| `pipelines,left_out,upload_bytes,gpu_wait_ms` | Interval changes in pipelines made, draws left out for pending pipelines, uploaded texture bytes and recording-slot wait milliseconds. Not #2897's all-thread resource-wait population |
+
+Linux CPU/RAM/I/O come from this process's procfs and system meminfo; thread deltas exclude new/reused IDs until two
+samples exist. Exited short-lived threads can be missed. RSS includes shared pages. Linux `read_bytes` counts storage
+reads; Windows `GetProcessIoCounters` includes logical/cached I/O, so a rise alone does not prove a disk stall.
+Windows uses `GetProcessTimes`, `GetThreadTimes`, `K32GetProcessMemoryInfo`, `GlobalMemoryStatusEx` and
+`GetSystemPowerStatus`; private commit is not resident memory. Physical pagefile use and general CPU temperature
+are not supplied by those APIs and stay `na`. No administrator rights or other process's memory is needed.
+NVML is opened at run time only (`libnvidia-ml.so.1`, or System32 `nvml.dll`), matched by the selected Vulkan UUID,
+and called only to read. No vendor library is linked or bundled. Missing library, symbol, sensor or identity is normal.
+The only NVML entry points are `nvmlInit_v2`, `nvmlShutdown`, `nvmlDeviceGetHandleByUUID`,
+`nvmlDeviceGetUtilizationRates`, `nvmlDeviceGetTemperature`, `nvmlDeviceGetPowerUsage`,
+`nvmlDeviceGetFanSpeed`, `nvmlDeviceGetClockInfo`, `nvmlDeviceGetCurrentClocksThrottleReasons`
+and `nvmlDeviceGetMemoryInfo`. No call changes clocks, power limits, fans or other device state.
+Windows AMD/Intel GPU sensors are not implemented; Linux Intel use/temperature are absent unless a supported source
+exists. No inference from temperature, frequency, a frame gap or another GPU substitutes for a missing value.
+
+Summary frame statistics cover the whole captured interval, not an average of overlapping sample windows.
+The nightly workbench uses the same ceil-sized lows; its regression/wrapper summaries instead floor the 1% count,
+and regression p99 uses index floor(N*0.99), not nearest rank. These differences matter on short captures.
+Process exit, fatal/device-lost/kernel lines and competing load remain the run wrapper's evidence, not guessed
+inside this file. Map/loading and named bridge capture commands are not part of this first implementation.
+To join retained evidence, select `capture_start.frame < frame <= summary.frame` in `frames.csv`; an absent trace,
+boundary or final summary does not certify a complete capture. Keep the main log for per-reading unavailability reasons.
+
 ### The GPU
 
 Pipeline-cache file ownership, temporary storage and failure behavior are described in

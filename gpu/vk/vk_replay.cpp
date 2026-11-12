@@ -41,6 +41,7 @@
 #include "vk_framegen.h"
 #include "vk_dlss.h"   // (hookshot: dlss_fg_idle)
 #include "vk_fps.h"
+#include "vk_perf.h"
 #include "vk_menu.h"
 #include "vk_jobs.h"
 #include "vk_shader.h"
@@ -3291,13 +3292,23 @@ void frame_log_present() {
     static FILE* fl = getenv("RX_VK_FRAME_LOG") ? std::fopen(getenv("RX_VK_FRAME_LOG"), "w") : nullptr;
     static std::chrono::steady_clock::time_point first, prev;
     static uint64_t frames;
-    if (!fl) return;
+    if (!fl && !perf_on()) return;
     const auto t = std::chrono::steady_clock::now();
-    if (!frames) first = prev = t, std::fputs("frame,time_s,frametime_ms\n", fl);
-    std::fprintf(fl, "%llu,%.4f,%.3f\n", (unsigned long long)frames, std::chrono::duration<double>(t - first).count(),
-                 std::chrono::duration<double, std::milli>(t - prev).count());
+    if (!frames) {
+        first = prev = t;
+        if (fl) std::fputs("frame,time_s,frametime_ms\n", fl);
+    }
+    const double seconds = std::chrono::duration<double>(t - first).count();
+    const double ms = std::chrono::duration<double, std::milli>(t - prev).count();
+    if (fl) std::fprintf(fl, "%llu,%.4f,%.3f\n", (unsigned long long)frames, seconds, ms);
+    if (perf_on()) {
+        // The same clock and retained precision as frames.csv; the sampler writes its own file, never this thread.
+        const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count();
+        perf_present(ns, fl ? std::nearbyint(ms * 1000) / 1000 : ms, fl ? (int64_t)frames : -1,
+                     fl ? std::nearbyint(seconds * 10000) / 10000 : -1);
+    }
     prev = t;
-    if (++frames % 60 == 0) std::fflush(fl);
+    if (++frames % 60 == 0 && fl) std::fflush(fl);
 }
 
 // ---- (hookshot) the control bridge's shots (host/control.c, docs/control.md): a PNG of the first present after a given one,
@@ -3801,6 +3812,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             pending = {true, value, presents, {}};
         }
         log_frame_stats();
+        if (perf_on()) perf_replay_present(presents, st_gpu_ns, st_wait_ns, ts_pool != VK_NULL_HANDLE);
     }
     if (dev.offscreen) frame_log_present();   // (no window: the copy into the offscreen image above is its present)
     if (dev.offscreen || interpolated) return;
@@ -4825,6 +4837,7 @@ void submit(const uint64_t* handles, int n) {
 }
 void present(const nvn_tex* t, const int crop[4]) {
     fps_presented();   // (the FPS counter: the game's frame ends here, on its presenting thread)
+    if (perf_on()) perf_game_present();
     programs_presented();   // (the programs' life: whether the game is in a load)
     FpsRender fr;
     if (!async_on()) {

@@ -21,6 +21,7 @@
 #include "vk_draw.h"
 #include "vk_framegen.h"
 #include "vk_internal.h"
+#include "vk_perf.h"
 #include "presenter_queue.h"
 static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCompute == VK_QUEUE_COMPUTE_BIT);
 #include "gpu_choice.h"
@@ -1271,6 +1272,7 @@ void prepare_with_screen() {
 bool started_up() {
     if (const char* e = getenv("RX_VK_START_DELAY")) Sleep((DWORD)atoi(e) * 1000);   // (diagnosis: a long start, as the first one is)
     if (!replay_start()) return false;
+    perf_start();   // (explicit sampled log only: starts no worker when unset)
     driver_cache_log("at the start");
     if (prepare_only()) {
         // (three parts: the programs, the pipelines the notes predict, then those they name, on one bar whose total has all three
@@ -1543,6 +1545,7 @@ __attribute__((visibility("default")))
 #endif
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
+    perf_stop();   // (flush the final telemetry on its own thread, before other teardown)
     programs_census_log("close");
     module_ids_flush();
     fsr4_close();             // (AMD FSR 4's tuned layers: their background builds stopped first, what they made then saved below)

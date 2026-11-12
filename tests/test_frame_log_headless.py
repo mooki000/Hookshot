@@ -14,11 +14,15 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
 WITNESS = "PASS: frame log CSV header, sequence, elapsed/interval times, and disabled output"
 FIXTURE = r'''
+#define _CRT_SECURE_NO_WARNINGS
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <thread>
+#include <cmath>
+static bool perf_on() { return false; }
+static void perf_present(int64_t, double, int64_t, double) { std::abort(); }
 @@FUNCTION@@
 int main() {
     for (int i = 0; i < 3; i++) {
