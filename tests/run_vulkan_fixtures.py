@@ -15,6 +15,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 LAYER = "VK_LAYER_KHRONOS_validation"
+ACTIVATION = ('Insert instance layer "' + LAYER + '"', 'Inserted device layer "' + LAYER + '"')
 FIXTURES = (
     ("test_wb_diff_observations_gpu.py", ("--run", "--device"), (
         r"PASS: off, guest/shadow parity and feedback guards",
@@ -54,6 +55,9 @@ def check_identity(output, expected):
 
 def check_fixture(fixture, returncode, output, expected):
     check_output(returncode, output)
+    for message in ACTIVATION:
+        if message not in output:
+            raise ValueError("validation layer was not confirmed active: " + message)
     names = re.findall(r"^(?:Device|DEVICE|GPU): (.+?)(?:; Vulkan |, api |$)", output, re.M)
     if len(names) != 1 or expected.lower() not in names[0].lower():
         raise ValueError("expected a selected %r device, saw %r" % (expected, names))
@@ -99,7 +103,7 @@ def main():
             "khronos_validation.debug_action = VK_DBG_LAYER_ACTION_LOG_MSG\n"
             "khronos_validation.log_filename = stdout\n"
             "khronos_validation.report_flags = error\n", encoding="utf-8")
-        env = dict(os.environ, VK_INSTANCE_LAYERS=LAYER, VK_LAYER_SETTINGS_PATH=tmp)
+        env = dict(os.environ, VK_INSTANCE_LAYERS=LAYER, VK_LAYER_SETTINGS_PATH=tmp, VK_LOADER_DEBUG="layer")
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
         code, output = run(["vulkaninfo", "--summary"], env)
