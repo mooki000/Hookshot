@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 CUT = "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);\n"
 ADD = "    { uint64_t _a=c->x[%d],_b=((uint64_t)(uint32_t)(((uint32_t)(c->x[8])) << 0)),_r=_a+_b; _r&=0xFFFFFFFFULL; c->x[8]=_r; }\n"
-LIFTED = ('#include "a64.h"\n'
+LIFTED = ('#define _CRT_SECURE_NO_WARNINGS\n#include "a64.h"\n'
           'void f_832b6840(Ctx *__restrict A64_NOESC c) {\n'
           '    if (c->x[2]) {\n' + CUT + ADD % 12 +
           '    } else {\n' + CUT + ADD % 10 +
