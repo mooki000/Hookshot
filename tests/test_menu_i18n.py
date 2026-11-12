@@ -1,6 +1,7 @@
 """gpu/vk/menu_i18n.h, the Insert menu's translations: every table's texts are the menu's own (vk_menu.cpp writes each
 English text), every translation keeps its text's printf conversions in order and its leading and trailing spaces (the menu
-joins pieces), and the language list holds what vk_menu_i18n.cpp expects. No game, no compiler.
+joins pieces), and the language list holds what vk_menu_i18n.cpp expects. The controls and Automatic mesh/prompt hints
+must remain present in every translated table. No game, no compiler.
 
 Run with: python -I tests/test_menu_i18n.py
 """
@@ -51,7 +52,30 @@ class MenuI18nTests(unittest.TestCase):
     def test_texts_are_the_menus(self):
         for table, pairs in self.tables.items():
             for en, _ in pairs:
-                self.assertIn(en, self.menu, "%s: %r is no text of vk_menu.cpp (renamed? then translate it again)" % (table, en))
+                self.assertTrue(en in self.menu, "%s: %r is no text of vk_menu.cpp (renamed? then translate it again)" % (table, en))
+
+    def test_current_hints_are_translated(self):
+        # Whole-string lookup needs the complete hint. Dropping a stale entry and lowering its count is not a fix.
+        hints = {
+            "controls": (
+                "Gamepad: the D-pad moves, A binds, B goes back. Ocarina note keys are only notes while "
+                "the ocarina waits for one; away from it they do their other jobs."
+            ),
+            "automatic mesh shaders": (
+                "The GPU's own mesh shaders where it has them, the compute path where it has not (on Linux "
+                "AMD always the compute path: RADV's mesh shaders stop the GPU, issue 2245)."
+            ),
+            "automatic button prompts": (
+                "Those of the first controller, from its name (SDL's). With none, the keyboard's (the Switch's with XInput "
+                "alone)."
+            ),
+        }
+        for name, hint in hints.items():
+            self.assertTrue(hint in self.menu, "%s: expected complete hint is no text of vk_menu.cpp" % name)
+        for table, pairs in self.tables.items():
+            keys = {en for en, _ in pairs}
+            for name, hint in hints.items():
+                self.assertTrue(hint in keys, "%s: missing current %s hint" % (table, name))
 
     def test_plural_forms(self):
         # (i18n::plural: Russian and Polish ask for a third form, " settings (many)", for 5 and up; the menu shows it
