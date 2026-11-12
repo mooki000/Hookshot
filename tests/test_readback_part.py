@@ -266,7 +266,8 @@ def main():
     submit = replay[replay.index("void submit_recording("):]
     bookkeeping = between(submit, "std::lock_guard mk(rec_map_mu);", "while (part_rec.size() > 8192) part_rec.erase(part_rec.begin());")
     assert len(bookkeeping) < 3000, "the bookkeeping must be in submit_recording's rec_timeline block"
-    waits = block(replay, "bool wait_recorded(uint64_t f,") + "\n" + block(replay, "bool wait_recorded_part(")
+    # Match the definition, not the forward declaration used by vk_timeline_wait.
+    waits = block(replay, "bool wait_recorded(uint64_t f, uint64_t timeout_ns, int* ok) {") + "\n" + block(replay, "bool wait_recorded_part(")
     inv = replay[replay.index("void invalidate(uint64_t gpu, uint64_t size) {"):]
     lookup = "const uint64_t v = memory_writeback_value(host->gpu_guest(gpu), size, nullptr, &part, &whole);"
     after = inv[inv.index(lookup):]
