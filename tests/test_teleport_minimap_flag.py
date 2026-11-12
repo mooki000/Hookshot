@@ -170,7 +170,8 @@ int main(void) {
     clock_ns += 9000000000LL, answer = 1, set_available = 0, said[0] = 0;
     check(oot_teleport(&c, 0x50000000ULL, 1) == 1 && requests == 5, "the teleport with no setter binding was not sent");
     check(hidden() && saved_hidden && set_calls == 2 && !pending, "a missing setter fell back to a live-only write");
-    check(strstr(said, line) == NULL, "a missing setter logged a successful repair");
+    check(strstr(said, "restore queued") == NULL, "a missing setter logged a successful repair");
+    check(strstr(said, "the game's Bool setter not found, left hidden") != NULL, "a missing setter was not named in the log");
     return failed;
 }
 '''

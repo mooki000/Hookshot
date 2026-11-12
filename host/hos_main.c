@@ -1011,6 +1011,9 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
             set_bool(c);
             *c = saved;
             hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): restore queued");
+        } else {   /* (another game build: say so, a report's log then shows why the minimap stayed away) */
+            hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): %s not found, left hidden",
+                    set_bool ? "the game data manager" : "the game's Bool setter");
         }
     }
     teleport.requested_at = now;
