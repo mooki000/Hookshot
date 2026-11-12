@@ -33,8 +33,9 @@ python -I scripts/test_requests.py request --pr 2711 --summary "Keep 8 GB cards 
   characters, preferably the full SHA. A non-head choice needs one extra GitHub comparison to resolve it and confirm
   it is an ancestor of the PR head; request/update refuse an outside commit. Testers verify membership again from
   the fetched PR before reviewing and building the pinned diff, including for requests posted during an outage.
-- If GitHub cannot be reached, only an explicit full 40-character `--commit` can be posted; approval and head stay
-  unknown until a later lookup succeeds. Otherwise retry when GitHub is available.
+- GitHub uses `GITHUB_TOKEN` (or `GH_TOKEN`) when set. If it is unreachable or rate-limited, get the full SHA from
+  your PR checkout with `git rev-parse --verify "HEAD^{commit}"` and pass it as `request --commit <40-character-sha>`;
+  approval and head stay unknown until a lookup succeeds. Without that full SHA, retry when GitHub is available.
 - The rules of [CONTRIBUTING.md](../../../CONTRIBUTING.md) apply: no game files or anything made from them, no
   secrets or personal details.
 - The script refuses a second open request from you for the same PR and needs.
