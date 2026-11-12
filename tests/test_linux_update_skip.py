@@ -52,6 +52,7 @@ def build(cc, tmp):
 static void hos_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); putchar(10); }
 const char *hos_romfs_dir, *hos_user_dir;
 void hos_update_check(void);
+void hos_crash_clean_end(void) {}
 ''' + saves + r'''
 int main(void) {
     const char *image = NULL;

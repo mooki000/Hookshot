@@ -373,6 +373,8 @@ void a64_svc(Ctx *c, uint32_t imm) {
     case 0x07:   /* ExitProcess */
         hos_log("svcExitProcess");
         hos_log_flush();
+        void hos_crash_clean_end(void);
+        hos_crash_clean_end();
         ExitProcess(0);
         return;
     case 0x0C: { /* GetThreadPriority(-, handle) -> (result, priority) */

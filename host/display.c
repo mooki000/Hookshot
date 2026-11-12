@@ -439,6 +439,8 @@ static void display_start_failed(const char *operation) {
     const DWORD error = GetLastError();
     hos_log("display: %s failed (error %lu)", operation, (unsigned long)error);
     hos_log_flush();
+    void hos_crash_clean_end(void);
+    hos_crash_clean_end();
     ExitProcess(1);
 }
 

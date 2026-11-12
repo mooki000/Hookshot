@@ -1131,6 +1131,10 @@ static void on_signal(int sig, siginfo_t *si, void *uctx) {
             context_to(uc, &ctx);
             return;
         }
+    /* Keep POSIX metadata in the unused tail, without changing NumberParameters
+       (the legacy CRASH log's read/write interpretation stays unchanged). */
+    rec.ExceptionInformation[13] = (ULONG_PTR)sig;
+    rec.ExceptionInformation[14] = (ULONG_PTR)(intptr_t)si->si_code;
     if (unhandled && unhandled(&ep) == EXCEPTION_CONTINUE_EXECUTION) {
         context_to(uc, &ctx);
         return;
@@ -1146,12 +1150,13 @@ static void on_signal(int sig, siginfo_t *si, void *uctx) {
         return;
     }
     signal(sig, SIG_DFL);
+    raise(sig);   /* externally sent fatal signals do not fault again after returning */
 }
 static void install_signals(void) {
     static int done;
     if (done) return;
     done = 1;
-    const int sigs[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
+    const int sigs[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT};
     for (size_t i = 0; i < sizeof sigs / sizeof sigs[0]; i++) {
         struct sigaction sa;
         memset(&sa, 0, sizeof sa);

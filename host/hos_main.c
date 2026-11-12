@@ -1755,6 +1755,8 @@ static int game_main(int argc, char **argv) {
         if (set && !env_on("HOS_DPI_UNAWARE")) set((void *)(intptr_t)-4);
     }
 #endif
+    void hos_crash_record_prepare(void);
+    hos_crash_record_prepare();
     {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
 #ifdef _WIN32
         {   /* (started again by the Insert menu's Restart now (host/hos_relaunch.c): the run before still has its log open until
@@ -1790,6 +1792,8 @@ static int game_main(int argc, char **argv) {
         }
     }
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
+    const char *hos_report_run_id(void);
+    hos_log("run_id: %s", hos_report_run_id());
     removed_switch_notes();
     void hos_control_start(const char *version);
     hos_control_start(HOOKSHOT_VERSION);   /* (HOS_CONTROL=<socket>: the control bridge, host/control.c) */
@@ -1990,6 +1994,8 @@ static int game_main(int argc, char **argv) {
     }
     call_guest(c, hos_entry_nnMain, sp, "nnMain");
     hos_log("nnMain returned");
+    void hos_crash_clean_end(void);
+    hos_crash_clean_end();
     return 0;
 }
 
@@ -2000,7 +2006,10 @@ static int game_argc;
 static char **game_argv;
 static DWORD WINAPI game_thread(void *p) {
     (void)p;
-    ExitProcess((UINT)game_main(game_argc, game_argv));
+    const UINT result = (UINT)game_main(game_argc, game_argv);
+    void hos_crash_clean_end(void);
+    hos_crash_clean_end();
+    ExitProcess(result);
 }
 /* (hookshot, linux) Room in the drivers' own shader caches for what the preparation builds. The pipelines the notes predict (~43,000
    in OoT, vk_draw.cpp predict_run) are built into the driver's disk cache alone, not into mkw_vk_pipelines.bin, which is read in whole

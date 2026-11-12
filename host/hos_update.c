@@ -263,6 +263,8 @@ void hos_update_check(void) {
         hos_log_flush();   /* (the lines logged before, queued: host/hos_thread.c log_queue) */
         fprintf(stderr, "update: Hookshot Builder started to update to %s; the game closes\n", tag);
         fflush(stderr);
+        void hos_crash_clean_end(void);
+        hos_crash_clean_end();
         ExitProcess(0);
     }
     MessageBoxW(NULL, L"Hookshot Builder could not be started. The game starts as it is.", L"Hookshot update", MB_OK | MB_ICONWARNING | MB_TOPMOST);
@@ -427,6 +429,8 @@ void hos_update_check(void) {
     if (pid > 0) {
         fprintf(stderr, "update: Hookshot Builder started to update to %s; the game closes\n", tag);
         fflush(stderr);
+        void hos_crash_clean_end(void);
+        hos_crash_clean_end();
         _exit(0);
     }
 }

@@ -277,6 +277,8 @@ void hos_display_loop(void) {
         hos_log("display: SDL_CreateWindow: %s: no window", hos_sdl_error());
         fprintf(stderr, "display: SDL_CreateWindow: %s: no window\n", hos_sdl_error());
         hos_log_flush();
+        void hos_crash_clean_end(void);
+        hos_crash_clean_end();
         ExitProcess(1);
     }
     vk_window.window = window;
