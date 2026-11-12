@@ -165,8 +165,8 @@ inline int slider_snap(int v) {
     }
     return best;
 }
-/// The Render resolution after a change of Upscaler or a preset: with an engine that has a Native, the slider's stop nearest it
-/// (its own value when it is one); else snap() as before
+/// The active Render resolution (also used when choosing a quality preset): the nearest supported step. Changing engines
+/// must not save this over the player's choice, so a scale missing on another engine comes back on return.
 inline int snap_render(int upscaler, int v) { return native_of(engine(upscaler)) >= 0 ? slider_snap(v) : snap(upscaler, v); }
 
 /// The Render resolution row's next step from (upscaler, v), dir +1 Right / -1 Left, wrapping: with an engine that has a

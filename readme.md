@@ -437,6 +437,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
   Profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
   suit.
+  Changing the Upscaler keeps your chosen render scale, including across a restart. An engine without that scale
+  temporarily uses and shows its nearest supported size: DLSS Balanced (58%) shows 50% with the game's own, then 58%
+  again on returning to DLSS. Changing Render resolution or choosing a Quality preset replaces that saved scale.
 - **Aspect ratio** and **Output resolution:** the menu lists the resolutions your screen offers (its display modes, as
   Windows lists them, DSR's included), with the common sizes of each of those shapes your screen does not list (1440p, 4K
   and 5K at 16:9, 1920x1200 and 2560x1600 at 16:10, 3440x1440 at 21:9, ...), grouped by shape. **Aspect ratio** lists

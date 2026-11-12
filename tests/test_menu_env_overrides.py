@@ -148,7 +148,7 @@ int main(int argc, char** argv) {
     CHECK(opts.output_res == 3 && output_at(3).w == 2560 && output_at(3).h == 1440);
     save();
     CHECK(has("output_res=2560x1440\n"));
-    // A preset (or the Upscaler's snap) sets an overridden row to the very value the environment forced: the menu's, saved
+    // A preset sets an overridden row to the very value the environment forced: the menu's, saved
     CHECK(has("game_speed=0\n"));
     env_release(&opts.realtime);
     save();

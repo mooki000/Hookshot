@@ -623,6 +623,7 @@ const char* tx_resolution(int v) {
         snprintf(b, sizeof b, "Native (%s, %ux%u)", up == ur::DLAA ? "DLAA" : "FSR 4", o.w, o.h);
         return b;
     }
+    v = ur::snap_render(up, v);   // (show the active engine's size without overwriting the player's saved scale)
     if (!ur::percent(v)) return "Auto (dynamic)";
     uint32_t w, h;
     game_size(ur::percent(v) / 100.0f, w, h);
@@ -640,7 +641,7 @@ const char* hn_resolution(int v, int variant) {
     // (Native is the slider's top: the 3D at the picture's full size)
     if (up == ur::DLAA) return "DLAA: the 3D at the picture's full size, anti-aliased by DLSS. The sharpest, and the heaviest.";
     if (up == ur::FSR4_AA) return "FSR 4's native AA: the 3D at the picture's full size. The sharpest, and the heaviest.";
-    const int p = ur::percent(v);
+    const int p = ur::percent(ur::snap_render(up, v));
     if (up == ur::DLSS) {
         switch (p) {
         case 0: return "The game lowers it when the GPU is busy, and DLSS follows. Set Sharpness to around 80%.";
@@ -1674,7 +1675,7 @@ int saved_value(int* value) {
     }
     return *value;
 }
-/// The menu set the row (the player, a preset, the Upscaler's snap): its value is saved from now on, even where it is the
+/// The menu set the row (the player or a preset): its value is saved from now on, even where it is the
 /// one the environment forced
 void env_release(const int* value) {
     for (int i = 0; i < env_override_count; i++)
@@ -2261,7 +2262,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available());
     if (r.value == &opts.resolution) {
         int up = upscaler(), res = *r.value;
-        ur::step_render(upscaler(), *r.value, dir, &up, &res);
+        ur::step_render(upscaler(), ur::snap_render(upscaler(), *r.value), dir, &up, &res);
         if (up != upscaler()) opts.dlss = up;   // (Native in or out: DLAA / DLSS, FSR 4's native AA / FSR 4)
         v = res;
     }
@@ -2288,11 +2289,6 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         if (r.value == &opts.ultrawide) {
             const int out = output_for_aspect(*r.value);
             if (out != opts.output_res) opts.output_res = out, env_release(&opts.output_res);
-        }
-        // (another Upscaler: the Render resolution moves to the nearest of its steps, DLSS's modes or the game's)
-        if (r.value == &opts.dlss) {   // (a slider stop kept)
-            opts.resolution = ur::snap_render(upscaler(), opts.resolution);
-            env_release(&opts.resolution);
         }
         if (r.value == &opts.vram_budget) {   // (hookshot: set on the row, the budget is the player's, on any card)
             opts.budget = 0;
@@ -4107,7 +4103,7 @@ void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkP
 int menu_vsync() { return env_on("RX_VK_FIFO") ? 1 : env_on("RX_VK_IMMEDIATE") ? 2 : opts.vsync; }
 bool resolution_auto() { return opts.resolution == 0; }
 int resolution_scale() {
-    const float s = upscaler_rows::percent(opts.resolution) / 100.0f;
+    const float s = upscaler_rows::percent(ur::snap_render(upscaler(), opts.resolution)) / 100.0f;
     return s > 0 ? (int)(twelfths(s) * 10000.0f / 12.0f + 0.5f) : 0;   // (the twelfth game_size labels)
 }
 
@@ -4308,7 +4304,6 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
         // (the Render resolution's Native is a place of its own, DLAA or FSR 4's native AA, whatever the value it kept; the
         // Upscaler that runs, as set_row steps it: a saved DLAA that cannot run here is the game's own, and its values count)
         const auto native = [&] { return r.value == &opts.resolution && ur::full_scale(upscaler()); };
-        const int render = opts.resolution, upscaler_was = opts.dlss;
         // (a value none of the steps reach: everything the steps on the way changed is put back, the Quality preset and the
         // rows the environment holds too)
         const Options opts_was = opts;
@@ -4325,9 +4320,6 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
             bridge_fill(i, out);
             return -2;
         }
-        // (each Upscaler on the way snapped the Render resolution to its own steps: snapped once, from where it was, as one
-        // step there would, and as it was when the Upscaler is. FSR 3.1 to DLSS through Off and the game's own took 58 % to 50 %)
-        if (r.value == &opts.dlss) opts.resolution = opts.dlss == upscaler_was ? render : ur::snap_render(upscaler(), render);
         save();
     } else if (want != *r.value) {
         set_row(r, want, want > *r.value ? 1 : -1);

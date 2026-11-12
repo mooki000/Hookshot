@@ -21,6 +21,7 @@ def main():
     host = (ROOT / "host/nn_applet.c").read_text(encoding="utf-8")
     menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
     fixture = r'''
+#define _CRT_SECURE_NO_WARNINGS
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -238,7 +239,7 @@ int main(int argc, char **argv) {
         // (each stop with its render size)
         assert(strcmp(tx_resolution(3), "Quality 67% (1280x720)") == 0 &&
                strcmp(tx_resolution(6), "Ultra Performance 33% (640x360)") == 0);
-        assert(strcmp(tx_resolution(9), "92% (1760x990)") == 0 && strcmp(tx_resolution(7), "42% (800x450)") == 0);
+        assert(strcmp(tx_resolution(9), "92% (1760x990)") == 0 && strcmp(tx_resolution(7), "Performance 50% (960x540)") == 0);
         const unsigned want[][3] = {{3, 1280, 720}, {5, 1120, 630}, {4, 960, 540}, {6, 640, 360}};
         for (const auto& m : want) {
             game_size(ur::percent(m[0]) / 100.0f, scene_w, scene_h);
