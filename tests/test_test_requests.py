@@ -16,6 +16,8 @@ import io
 import json
 import os
 import sys
+import subprocess
+import tempfile
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -160,6 +162,7 @@ def test_order():
 
 GITHUB = {}  # PR number -> what pr_info returns, or an exception to raise
 CALLS = []
+COMPARE_CALLS = []
 
 
 def fake_pr_info(number):
@@ -169,6 +172,14 @@ def fake_pr_info(number):
     if isinstance(got, Exception):
         raise got
     return got
+
+
+def fake_github_json(url, number):
+    check("/compare/" in url, "only a non-head membership comparison needs another GitHub answer")
+    COMPARE_CALLS.append(url)
+    commit = url.split("/compare/")[-1].split("...")[0]
+    sha = next((sha for sha in (HEAD, NEXT) if sha.startswith(commit)), "c" * 40)
+    return {"status": "ahead" if sha != "c" * 40 else "diverged", "base_commit": {"sha": sha}}
 
 
 def run(events, user, *argv):
@@ -182,6 +193,7 @@ def run(events, user, *argv):
             mock.patch.object(tr.urllib.request, "urlopen", side_effect=AssertionError("unexpected network call")), \
             mock.patch.object(tr, "history", side_effect=lambda c, r: list(events)), \
             mock.patch.object(tr, "pr_info", side_effect=fake_pr_info), \
+            mock.patch.object(tr, "github_json", side_effect=fake_github_json, create=True), \
             mock.patch.object(tr, "send", side_effect=lambda c, r, text: (sent.append(text), events.append(
                 {"sender": config["user_id"], "origin_server_ts": tr.time.time() * 1000, "body": text}))), \
             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -330,7 +342,7 @@ def test_explicit_commit():
     events = []
     tid = request(events, "--commit", NEXT[:8].upper())
     card = tr.replay(events)[tid]
-    check(card.get("commit") == NEXT[:8] and card["notes"] == "Check Kakariko.", "explicit request commit is stored")
+    check(card.get("commit") == NEXT and card["notes"] == "Check Kakariko.", "explicit request commit is resolved")
     check("not the PR head" in tr.describe(card) and "explicit choice" in tr.describe(card),
           "explicit non-head choice is explained, not called a head move")
     code, _, out = run(events, "bob", "done", tid, "--result", "mixed", "--comment", COMMENT,
@@ -559,6 +571,91 @@ def test_json_current_results():
     check(tr.public(legacy).get("current_results") == legacy["results"], "legacy JSON keeps all results current")
 
 
+def test_request_membership():
+    events = []
+    COMPARE_CALLS.clear()
+    tid = request(events)
+    check(not COMPARE_CALLS, "a head request needs no membership call")
+    for command in (("request", "--pr", "2711", "--summary", "outside", "--needs", "other"),
+                    ("update", tid)):
+        COMPARE_CALLS.clear()
+        code, sent, _ = run(events, "ann", *command, "--commit", "c" * 40)
+        check(code == 1 and not sent and len(COMPARE_CALLS) == 1 and "not a verified ancestor" in STDERR,
+              "%s refuses an explicit commit outside the PR" % command[0])
+    COMPARE_CALLS.clear()
+    code, sent, _ = run(events, "ann", "update", tid, "--commit", NEXT[:7])
+    check(code == 0 and len(COMPARE_CALLS) == 1 and tr.replay(events)[tid]["commit"] == NEXT,
+          "update checks and resolves a non-head ancestor once")
+    for status in ("behind", "diverged"):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {"status": status, "base_commit": {"sha": NEXT}}).encode("utf-8")
+        with mock.patch.object(tr.urllib.request, "urlopen", return_value=response) as api:
+            try:
+                tr.pr_commit(2711, NEXT, HEAD)
+                check(False, "a non-ancestor comparison must be refused")
+            except tr.team_chat.ChatError:
+                check(api.call_count == 1, "a %s comparison refuses without retry" % status)
+
+
+def test_verify_membership():
+    with tempfile.TemporaryDirectory(prefix="test-request-") as tmp, \
+            mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}):
+        source, repo = os.path.join(tmp, "source"), os.path.join(tmp, "tester")
+        os.mkdir(source)
+
+        def fixture(*argv):
+            result = subprocess.run(["git", "-C", source, "-c", "user.name=Test",
+                                     "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", *argv],
+                                    capture_output=True, text=True, check=True)
+            return result.stdout.strip()
+
+        def commit_file(name, text):
+            with open(os.path.join(source, name), "w", encoding="utf-8") as f:
+                f.write(text)
+            fixture("add", name)
+            fixture("commit", "-m", name)
+            return fixture("rev-parse", "HEAD")
+
+        fixture("init", "--initial-branch=main")
+        base = commit_file("base.txt", "base\n")
+        fixture("checkout", "-b", "pr")
+        pin = commit_file("pinned.txt", "pinned change\n")
+        head = commit_file("head-only.txt", "head-only change\n")
+        fixture("update-ref", "refs/pull/2711/head", head)
+        fixture("checkout", "-b", "outside", base)
+        outsider = commit_file("outside.txt", "unrelated fork change\n")
+        fixture("checkout", "pr")
+        fixture("clone", "--no-hardlinks", source, repo)
+        real_git = tr.git
+
+        def local_git(path, *argv):
+            return real_git(path, *(source if arg == tr.REPO else arg for arg in argv))
+
+        GITHUB[2711] = {"state": "open", "labels": [], "author": "x", "association": "COLLABORATOR",
+                        "head": head, "base": base}
+        try:
+            with mock.patch.object(tr, "git", side_effect=local_git):
+                for chosen, valid in ((pin, True), (outsider, False)):
+                    events = [ev("ann", int(tr.time.time() // 60), REQ["body"]
+                                 + "\nCommit: %s\nHead: %s" % (chosen, head))]
+                    run(events, "bob", "claim", "T-7KQ2")
+                    before = real_git(repo, "rev-parse", "HEAD")
+                    code, sent, out = run(events, "bob", "verify", "T-7KQ2", "--repo", repo)
+                    if valid:
+                        check(code == 0 and not sent and "verified commit: " + pin in out,
+                              "tester verifies the pinned ancestor against the fetched PR head")
+                        check("+pinned change" in out and "head-only change" not in out,
+                              "tester reviews the pinned diff, not the newer head's changes")
+                    else:
+                        check(code == 3 and sent == ["%s T-7KQ2 release" % T] and "not a verified ancestor" in STDERR,
+                              "tester refuses a fetchable outside commit and releases its claim")
+                        check(BOB not in tr.replay(events)["T-7KQ2"]["claims"], "failed verification leaves no claim")
+                    check(real_git(repo, "rev-parse", "HEAD") == before, "verification never checks out or builds code")
+        finally:
+            GITHUB.clear()
+
+
 def test_old_client():
     old = load(args.old_source, "old_test_requests")
     events = []
@@ -592,7 +689,7 @@ def test_old_client():
 tests = (test_parse, test_request, test_claims, test_done_cancel, test_order, test_commands, test_approval,
          test_request_head, test_moved_head, test_done_commit, test_explicit_commit, test_update_commit,
          test_old_card, test_list_calls, test_done_unreachable, test_request_unreachable, test_github_head,
-         test_json_current_results)
+         test_json_current_results, test_request_membership, test_verify_membership)
 if args.old_source:
     tests += (test_old_client,)
 if args.test:

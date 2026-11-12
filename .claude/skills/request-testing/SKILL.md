@@ -30,7 +30,9 @@ python -I scripts/test_requests.py request --pr 2711 --summary "Keep 8 GB cards 
   whole PR: where in the game, what to compare, what counts as a pass, which log lines or numbers to copy. Before and
   after (main against the PR) when it is about speed.
 - `--commit <sha>`: choose another commit of this PR deliberately; otherwise the PR head is pinned. Use 7 to 40 hex
-  characters, preferably the full SHA. A non-head choice is kept and called out; membership in the PR is not checked.
+  characters, preferably the full SHA. A non-head choice needs one extra GitHub comparison to resolve it and confirm
+  it is an ancestor of the PR head; request/update refuse an outside commit. Testers verify membership again from
+  the fetched PR before reviewing and building the pinned diff, including for requests posted during an outage.
 - If GitHub cannot be reached, only an explicit full 40-character `--commit` can be posted; approval and head stay
   unknown until a later lookup succeeds. Otherwise retry when GitHub is available.
 - The rules of [CONTRIBUTING.md](../../../CONTRIBUTING.md) apply: no game files or anything made from them, no

@@ -83,6 +83,7 @@ Anything that needs eyes or hands (playing a section, judging flicker) the agent
 python -I scripts/test_requests.py list                       open requests, untested ones first: take the first that fits
 python -I scripts/test_requests.py show T-7KQ2                one request, with the author's notes
 python -I scripts/test_requests.py claim T-7KQ2               you're on it (others may be too)
+python -I scripts/test_requests.py verify T-7KQ2 --repo <test-folder>  verify membership and print the pinned diff
 python -I scripts/test_requests.py renew                      still testing: run it every 30 minutes or so
 python -I scripts/test_requests.py release T-7KQ2             stopping without a result
 python -I scripts/test_requests.py done T-7KQ2 --commit 1a2b3c4 --result pass --comment <link to your comment on the PR>
@@ -90,9 +91,11 @@ python -I scripts/test_requests.py done T-7KQ2 --commit 1a2b3c4 --result pass --
 
 Between `claim` and `done`:
 
-1. Fetch the PR in its own folder (`gh pr checkout <number>` in a second clone or worktree), then check out the
-   **commit printed by `claim`**, not whichever head the fetch returned (`git checkout --detach <commit>`). If it
-   cannot be fetched, ask the requester; do not silently build a different commit.
+1. Create a separate test worktree at a trusted commit. From the trusted checkout, run
+   `python -I scripts/test_requests.py verify T-7KQ2 --repo <test-folder>` **before checkout or build**. It fetches the
+   PR, requires the claimed commit to be an ancestor of its head, and prints the PR-base-to-pin diff for review.
+   A failed check releases the claim; do not build it. Review that diff, not a newer head's, then check out the
+   verified commit with `git -C <test-folder> checkout --detach <commit>`. No code is checked out or built by `verify`.
 2. Do what the request's notes ask (`show` prints them); if they compare against `main`, build `main` the same way and
    run both under the same conditions.
 3. Comment on the PR (`gh pr comment <number>`, or on GitHub), starting with the request's ID:
@@ -123,12 +126,14 @@ Old cards and messages still work; results from an old client that did not recor
 known commit.
 
 `request --commit <sha>` deliberately asks for another commit of that PR. The value must be 7 to 40 hexadecimal
-characters. An abbreviation of the current head is expanded; other values are kept and shown as an explicit
-non-head choice. The script checks the spelling, not membership in the PR or uniqueness of an abbreviation; the
-requester must choose the right commit. Prefer the full SHA.
+characters. An abbreviation is resolved to a full SHA. A non-head choice needs one extra GitHub comparison to prove
+it is an ancestor of the PR head; request/update refuse a commit outside that history. Testers still use `verify`
+against the fetched PR before building: a request posted during an outage has not had that online membership check.
 
 `list` checks approval, PR state and heads once per distinct open PR, reusing the same answer for all three.
 `show`, `claim`, `done` and `update` check one PR; `request` gets the head and approval from the same single answer.
+An explicit non-head request/update needs the additional comparison above. `verify` makes one PR lookup and uses
+Git to fetch and check the PR head and base, with external diff/text-conversion programs disabled.
 `GITHUB_TOKEN` (or `GH_TOKEN`) is used when set. If GitHub is unavailable or rate-limited, reads warn and still show
 the room's record. `done` still records the tested commit, without a head comparison, and says the head could not
 be checked. `request --commit <full-40-character-sha>` can still post, with approval and head unknown; without that

@@ -62,10 +62,13 @@ build, look at what the PR changes that runs on this PC (build and Python script
 downloads, deletes or reaches outside the repository); if something does what the PR doesn't explain, stop, release
 the claim and tell the user.
 
-1. Fetch the PR in its own folder, not on top of the user's work: `git worktree add --detach
-   ../Hookshot-test-<pr>`, then `gh pr checkout <pr>` inside it (this works in a jj repository too: a jj workspace
-   has no `.git` for `gh` to use). Then `git checkout --detach <commit-from-claim>`. If that commit cannot be
-   fetched, ask the requester rather than substituting another. Note the actual commit you built.
+1. From a **trusted checkout**, create a separate test folder at its current commit: `git worktree add --detach
+   ../Hookshot-test-<pr>`. Before checking out or building the pin, run the trusted client's
+   `python -I scripts/test_requests.py verify T-XXXX --repo ../Hookshot-test-<pr>`. It fetches the PR head from the
+   fixed upstream repository, checks `git merge-base --is-ancestor <pin> <PR-head>`, and prints the diff from the PR
+   base to **that pin**, not to a newer head. It releases the claim on failure: do not build a missing or outside
+   commit, even if GitHub can fetch it from another fork. Review the printed diff, especially scripts/tools, then
+   `git -C ../Hookshot-test-<pr> checkout --detach <verified-commit>`. Note the actual commit you built.
 2. Build and run as in [docs/development.md](../../../docs/development.md) (*Use*, *Building*, *Running a test*). If
    the notes compare against main, build main the same way and run both under the same conditions, swapping the
    order once.

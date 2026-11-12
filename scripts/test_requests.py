@@ -6,6 +6,7 @@
     python -I scripts/test_requests.py list [--all] [--mine] [--json]
     python -I scripts/test_requests.py show T-7KQ2 [--json]
     python -I scripts/test_requests.py claim T-7KQ2 [--again]
+    python -I scripts/test_requests.py verify T-7KQ2 --repo <test worktree>
     python -I scripts/test_requests.py renew [T-7KQ2]
     python -I scripts/test_requests.py release T-7KQ2
     python -I scripts/test_requests.py done T-7KQ2 --result pass|fail|mixed --comment <URL of your comment on the PR>
@@ -53,6 +54,7 @@ import json
 import os
 import random
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -234,21 +236,26 @@ def need(t):
     return (t.get("approved") is False, bool(current_results(t)), bool(t["claims"]), t["requested"])
 
 
-def pr_info(number):
-    """The PR's state, labels, author's standing and head commit, in one GitHub call."""
-    req = urllib.request.Request(PR_API % number, headers={"Accept": "application/vnd.github+json",
+def github_json(url, number):
+    """One GitHub answer, with the same optional token and rate-limit care for every endpoint."""
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
                                                            "User-Agent": team_chat.USER_AGENT})
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
         req.add_header("Authorization", "Bearer " + token)
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
-            pr = json.loads(r.read().decode("utf-8"))
+            return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         raise team_chat.ChatError("GitHub answered %d for PR #%d%s" % (
             error.code, number, " (rate limit: set GITHUB_TOKEN)" if error.code in (403, 429) else "")) from None
     except (urllib.error.URLError, OSError, ValueError) as error:
         raise team_chat.ChatError("cannot reach GitHub to check PR #%d: %s" % (number, error)) from None
+
+
+def pr_info(number):
+    """The PR's state, labels, author's standing and head commit, in one GitHub call."""
+    pr = github_json(PR_API % number, number)
     state = "merged" if pr.get("merged_at") else "closed" if pr.get("state") == "closed" \
         else "draft" if pr.get("draft") else "open"
     head = (pr.get("head") or {}).get("sha", "")
@@ -256,11 +263,35 @@ def pr_info(number):
         raise team_chat.ChatError("GitHub did not return a head commit for PR #%d" % number)
     return {"state": state, "labels": [label.get("name") for label in pr.get("labels", [])],
             "author": (pr.get("user") or {}).get("login"), "association": pr.get("author_association"),
-            "head": head.lower()}
+            "head": head.lower(), "base": (pr.get("base") or {}).get("sha")}
 
 
 def approved(info):
     return info["association"] in TRUSTED or LABEL in info["labels"]
+
+
+def pr_commit(number, commit, head):
+    """Resolve a non-head commit and require that it is an ancestor of the PR head."""
+    if not commit or same_commit(commit, head):
+        return head
+    url = "https://api.github.com/repos/NotRexed/Hookshot/compare/%s...%s?per_page=1" % (commit, head)
+    comparison = github_json(url, number)
+    sha = (comparison.get("base_commit") or {}).get("sha", "")
+    if comparison.get("status") not in ("ahead", "identical") or not isinstance(sha, str) \
+            or len(sha) != 40 or not COMMIT.fullmatch(sha) or not same_commit(commit, sha.lower()):
+        raise team_chat.ChatError("commit %s is not a verified ancestor of PR #%d head %s" % (commit, number, head))
+    return sha.lower()
+
+
+def git(repo, *args):
+    try:
+        result = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise team_chat.ChatError("cannot check the test repository: %s" % error) from None
+    if result.returncode:
+        raise team_chat.ChatError("git %s failed: %s" % (" ".join(args), result.stderr.strip()))
+    return result.stdout.strip()
 
 
 def annotate(tests):
@@ -406,7 +437,7 @@ def cmd_request(args, config):
             raise team_chat.ChatError("%s; cannot determine the PR head: retry when GitHub is available or "
                                       "use --commit with a full 40-character SHA" % error) from None
         info, head_error = None, str(error)
-    commit = chosen_commit(args.commit, info["head"]) if info else args.commit
+    commit = pr_commit(pr, args.commit, info["head"]) if info else args.commit
     tid = new_id(tests)
     text = "%s %s request: %s\n" % (MARK, tid, summary)
     if needs:
@@ -493,6 +524,43 @@ def cmd_claim(args, config):
     return 0
 
 
+def cmd_verify(args, config):
+    """Check membership using the PR's fetched history, then print the exact pinned diff for review."""
+    me = config["user_id"]
+    rid, tests = state(config)
+    t = find(tests, args.id)
+    if me not in t["claims"]:
+        return refuse("claim %s before verifying a build" % t["id"])
+    commit = t.get("claim_commits", {}).get(me)
+    try:
+        if not t["pr"] or not commit:
+            raise team_chat.ChatError("this claim has no recorded PR commit; use a current client to claim it")
+        info = pr_info(t["pr"])
+        if not approved(info) or info["state"] in ("merged", "closed"):
+            raise team_chat.ChatError("the PR is no longer open and approved for testing")
+        base = info.get("base") or ""
+        if not isinstance(base, str) or not COMMIT.fullmatch(base):
+            raise team_chat.ChatError("GitHub did not return the PR base commit")
+        git(args.repo, "fetch", "--no-tags", "--no-recurse-submodules", REPO, "refs/pull/%d/head" % t["pr"])
+        head = git(args.repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+        if head != info["head"]:
+            raise team_chat.ChatError("the PR head moved during verification; claim and check it again")
+        pin = git(args.repo, "rev-parse", "--verify", commit + "^{commit}")
+        try:
+            git(args.repo, "merge-base", "--is-ancestor", pin, head)
+        except team_chat.ChatError:
+            raise team_chat.ChatError("commit %s is not a verified ancestor of PR #%d head %s"
+                                      % (commit, t["pr"], head)) from None
+        git(args.repo, "fetch", "--no-tags", "--no-recurse-submodules", REPO, base)
+        diff = git(args.repo, "diff", "--no-ext-diff", "--no-textconv", base + "..." + pin, "--")
+    except team_chat.ChatError as error:
+        send(config, rid, "%s %s release" % (MARK, t["id"]))
+        return refuse("%s; released %s, do not build it" % (error, t["id"]))
+    print("verified commit: %s (ancestor of PR #%d head %s)" % (pin, t["pr"], head))
+    print("Review this pinned commit's diff before checking it out or building:\n" + diff)
+    return 0
+
+
 def cmd_renew(args, config):
     me = config["user_id"]
     rid, tests = state(config)
@@ -567,7 +635,7 @@ def cmd_update(args, config):
     if not t["pr"]:
         return refuse("%s has no PR" % t["id"])
     info = pr_info(t["pr"])
-    commit = chosen_commit(args.commit, info["head"])
+    commit = pr_commit(t["pr"], args.commit, info["head"])
     send(config, rid, "%s %s update: %s\nHead: %s" % (MARK, t["id"], commit, info["head"]))
     print("updated %s; commit to build: %s (existing claims keep their commit)" % (t["id"], commit))
     notice = commit_notice({"commit": commit, "head": info["head"], "requested_head": info["head"]})
@@ -609,6 +677,9 @@ def main(argv=None):
     p = sub.add_parser("claim", help="start testing a request")
     p.add_argument("id")
     p.add_argument("--again", action="store_true", help="test a request you already reported on")
+    p = sub.add_parser("verify", help="verify the claimed commit belongs to the PR and print its diff for review")
+    p.add_argument("id")
+    p.add_argument("--repo", required=True, help="test worktree; fetches only, does not check out or build")
     p = sub.add_parser("renew", help="keep your claims (all of them, or one)")
     p.add_argument("id", nargs="?")
     p = sub.add_parser("release", help="stop testing without a result")
@@ -625,7 +696,8 @@ def main(argv=None):
     p.add_argument("id")
     args = parser.parse_args(argv)
     commands = {"request": cmd_request, "list": cmd_list, "show": cmd_show, "claim": cmd_claim, "renew": cmd_renew,
-                "release": cmd_release, "done": cmd_done, "cancel": cmd_cancel, "update": cmd_update}
+                "release": cmd_release, "done": cmd_done, "cancel": cmd_cancel, "update": cmd_update,
+                "verify": cmd_verify}
     try:
         return commands[args.command](args, team_chat.session()) or 0
     except team_chat.ChatError as error:
