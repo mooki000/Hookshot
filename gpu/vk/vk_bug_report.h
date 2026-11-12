@@ -56,6 +56,8 @@ bool recover(Inputs in);
 /// Pure parsers shared by process collection and authored fixtures.
 std::string library_names(const std::string& text, bool maps);
 std::string memory_fields(const std::string& text, bool process);
+const char* filesystem_name(uint64_t type);
+bool system_power_supply(const std::string& scope);
 /// write() on a thread of its own: false while one is still being written
 bool start(Inputs in);
 enum State { kIdle, kSaving, kSaved, kFailed };

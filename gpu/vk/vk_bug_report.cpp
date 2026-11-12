@@ -45,7 +45,7 @@
 #include <pwd.h>
 #include <sys/utsname.h>
 #include <unistd.h>
-#include <sys/statvfs.h>
+#include <sys/vfs.h>
 #include <sys/sysmacros.h>
 extern char** environ;
 #endif
@@ -275,6 +275,11 @@ std::string system_details(const Inputs& in) {
     std::string data;
     if (read_text("/proc/meminfo", data)) out << memory_fields(data, false);
     else out << "RAM/swap: unavailable\n";
+    struct statfs storage{};
+    if (!statfs(in.game_dir.c_str(), &storage))
+        out << "Filesystem: " << filesystem_name((uint64_t)storage.f_type) << " (type 0x" << std::hex
+            << (uint64_t)storage.f_type << std::dec << ")\n";
+    else out << "Filesystem: unavailable\n";
     struct stat st{};
     std::string rotation = "unknown";
     if (!stat(in.game_dir.c_str(), &st)) {
@@ -286,23 +291,6 @@ std::string system_details(const Inputs& in) {
                 if (trimmed(data) == "1") rotation = "yes";
                 break;
             }
-        if (read_text("/proc/self/mountinfo", data)) {
-            std::istringstream lines(data);
-            std::string line;
-            while (std::getline(lines, line)) {
-                std::istringstream fields(line);
-                std::string id, parent, device;
-                fields >> id >> parent >> device;
-                const auto dash = line.find(" - ");
-                if (device == std::to_string(major(st.st_dev)) + ":" + std::to_string(minor(st.st_dev)) && dash != std::string::npos) {
-                    std::istringstream tail(line.substr(dash + 3));
-                    std::string type;
-                    tail >> type;
-                    out << "Filesystem: " << type << "\n";
-                    break;
-                }
-            }
-        } else out << "Filesystem: unavailable\n";
     }
     out << "Rotational: " << rotation << " (kernel block queue; stacked/network filesystems may be unknown)\n";
     const std::string session = lower(env_value(in, "XDG_SESSION_TYPE")), desktop = lower(env_value(in, "XDG_CURRENT_DESKTOP"));
@@ -321,8 +309,9 @@ std::string system_details(const Inputs& in) {
     out << "\n";
     bool supply = false;
     for (fs::directory_iterator it("/sys/class/power_supply", ec), end; !ec && it != end; it.increment(ec)) {
-        std::string type, online, status, capacity;
+        std::string type, online, status, capacity, scope;
         const auto root = it->path();
+        if (!read_text(path_text(root / "scope"), scope, 64) || !system_power_supply(scope)) continue;
         if (!read_text(path_text(root / "type"), type, 64)) continue;
         if (trimmed(type) == "Mains" && read_text(path_text(root / "online"), online, 32)) {
             out << "AC online: " << (trimmed(online) == "1" ? "yes" : "no") << "\n";
@@ -572,8 +561,8 @@ void take_facts(const std::string& line, LogFacts& f) {
         if (f.areas.size() == 16) f.areas.erase(f.areas.begin());
         f.areas.push_back(trimmed(line).substr(0, 512));
     }
-    for (const char* key : {"texture cache:", "vram:", "VRAM", "program cache:", "pipeline cache", "preparation:",
-                            "precompile", "program census", "shaders'", "vk: frame", "vk: present", "swapchain"})
+    for (const char* key : {"texture cache:", "vk: VRAM:", "vk: textures:", "VRAM", "program cache:", "pipeline cache", "preparation:",
+                            "precompile", "program census", "shaders'", "vk: frame", "vk: present:", "swapchain"})
         if (line.find(key) != std::string::npos) f.metrics[key] = trimmed(line).substr(0, 1024);
     if (line.find("hid: controller") != std::string::npos && line.find("mapping-string") == std::string::npos) {
         if (f.controllers.size() < 8192) f.controllers += trimmed(line).substr(0, 512) + "\n";
@@ -702,6 +691,24 @@ std::string url_part(const std::string& s) {
 }
 
 }  // namespace
+
+const char* filesystem_name(uint64_t type) {
+    // Linux statfs magic values; unlike mountinfo's device column these work for
+    // Btrfs subvolumes too. Unknown types retain their numeric code in system.txt.
+    switch (type) {
+    case 0x9123683e: return "btrfs";
+    case 0xef53: return "ext2/ext3/ext4";
+    case 0x58465342: return "xfs";
+    case 0x2fc12fc1: return "zfs";
+    case 0xf2f52010: return "f2fs";
+    case 0x01021994: return "tmpfs";
+    case 0x794c7630: return "overlayfs";
+    case 0x6969: return "nfs";
+    case 0x65735546: return "fuse";
+    default: return "unknown";
+    }
+}
+bool system_power_supply(const std::string& scope) { return trimmed(scope) == "System"; }
 
 std::string library_names(const std::string& text, bool maps) {
     std::set<std::string> names;

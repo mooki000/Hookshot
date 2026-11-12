@@ -106,6 +106,7 @@ int main(int argc, char** argv) {
         in.ask_picture = ask_failure;
     }
     if (mode == "huge-fields") in.version = in.gpu = in.system = std::string(4000, 'X');
+    if (mode == "process") in.collect_process = true;
     in.now = 1789000000;
     in.log = say;
     in.picture_wait_ms = mode == "picture" ? 30000 : 300;   // (a picture ends the wait as soon as it is written)
@@ -159,6 +160,10 @@ int main(int argc, char** argv) {
     CHECK(library_names("/home/al/liboverlay.so:/opt/libinject.so", false) == "libinject.so\nliboverlay.so\n");
     CHECK(memory_fields("MemTotal: 1000 kB\nMemAvailable: 750 kB\nSwapTotal: 100 kB\nSwapFree: 90 kB\nName: private\n", false).find("RAM in use: 250 KiB") != std::string::npos);
     CHECK(memory_fields("VmRSS: 123 kB\nVmSwap: 4 kB\nUid: 1000 1000\n", true) == "VmRSS: 123 KiB\nVmSwap: 4 KiB\n");
+    CHECK(std::string(filesystem_name(0x9123683e)) == "btrfs");
+    CHECK(std::string(filesystem_name(0x01021994)) == "tmpfs");
+    CHECK(std::string(filesystem_name(0x12345678)) == "unknown");
+    CHECK(system_power_supply("System\n") && !system_power_supply("Device\n") && !system_power_supply("Unknown\n"));
 
     // this PC's part: the system as the form asks it, and what fill_here finds
     std::printf("SYSTEM %s\n", system_text().c_str());
@@ -345,10 +350,14 @@ def main():
         now_log = game_path / "hookshot_log.txt"
         now_log.write_text(
             "[hos host] hookshot " + VERSION + "\n"
+            "[hos host] run_id: " + "b" * 32 + "\n"
             "[hos sead::MainThread] fs: mounted content: -> " + home + sep + "Games" + sep + "Hookshot" + sep + "romfs\n"
             "[hos sead::MainThread] fs: mounted save: -> " + home + "/Games/Hookshot/user\\save\\5a3c\n"
             "[hos MainThread] vk: pipeline cache /run/media/" + user + "/SD/Hookshot/mkw_vk_pipelines.bin (1 KB)\n"
             "[hos Main] map: KokiriForest_Child (child)\n"
+            "[hos Main] vk: VRAM: 6784 MB used; textures 2333 MB (budget 6144 MB), 1152 textures\n"
+            "[hos Main] vk: textures: decoded ASTC 1351 MB, rendered 319 MB, other 440 MB\n"
+            "[hos Main] vk: status: 600 frames; VRAM 6.6 of 22.1 GB\n"
             "[hos host] Malice and alice123 stay, as /x/alice123/ does\n"
             "[hos Main] map: HyruleField_Child (child)\n", encoding="utf-8")
         (game_path / "hookshot_log.1.txt").write_text(
@@ -511,7 +520,6 @@ def main():
         old_text = old_text.replace("\n", "\n[hos host] run_id: " + old_id + "\n", 1)
         old_text += "[hos host] CRASH: [x0] 00 01 02 03\n"
         previous_log.write_text(old_text, encoding="utf-8")
-        now_log.write_text(now_log.read_text(encoding="utf-8").replace("\n", "\n[hos host] run_id: " + current_id + "\n", 1), encoding="utf-8")
         incident_name = "crash-20261112T120000Z.txt"
         record = pending / incident_name
         authored = ("Hookshot crash record 1\nrun_id: " + old_id + "\nversion: v2.0.14\nwhen: 20261112T120000Z\n"
@@ -623,6 +631,14 @@ def main():
                 check(any(x["name"] == "save/slot_00/progress.sav" and not x["shareable"] for x in meta["files"]), "save marked shareable")
         folders, _ = run(exe, "huge-fields", game, str(now_log), home, user, windows)
         check(len((game_path / folders[0] / "issue-link.txt").read_text(encoding="utf-8").strip()) <= 2000, "long hardware fields escaped link cap")
+        folders, _ = run(exe, "process", game, str(now_log), home, user, windows)
+        result = game_path / folders[0]
+        bundle(result, home, user, game)
+        system_snapshot = (result / "system.txt").read_text(encoding="utf-8")
+        check("Filesystem:" in system_snapshot or "Filesystem/rotation: unavailable" in system_snapshot, "filesystem silently missing")
+        perf = (result / "performance.txt").read_text(encoding="utf-8")
+        check("textures 2333 MB (budget 6144 MB)" in perf and "decoded ASTC 1351 MB" in perf,
+              "generic VRAM status overwrote detailed texture counters")
     print("bug report: ok (report.txt as the issue form, both logs redacted, the picture, the long log, the terminal start, "
           "switch values, NUL bytes, the folder's reason)")
 

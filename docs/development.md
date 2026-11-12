@@ -155,6 +155,10 @@ Its CSV copies up to 512 raw samples under `vk_fps.cpp`'s existing `ring_mu`; it
 counter or add a lock/clock read to normal play. GPU timing requires previously collected Breakdown
 samples. The 1% low is 1000 divided by the mean of the slowest `ceil(N/100)` positive intervals.
 Headless samples are present-thread CPU intervals, not scanout or display latency.
+Linux filesystem type comes from `statfs`, including Btrfs subvolumes whose device number is not
+the mount table's. Power readings require system scope: a mouse/controller battery is not the
+machine's battery. Detailed `vk: VRAM:`/`vk: textures:` lines are retained separately from the
+short status line, so that line cannot hide the texture count and effective budget.
 
 Reports publish `manifest.json` last: `schema: 1`, `report_id`, `when`, and `files` entries with
 relative `name`, byte `size`, `status`, `reason`, `shareable`, and optional `incident_id`.
