@@ -5,7 +5,7 @@
         [--needs "8 GB NVIDIA or AMD card, Windows"] [--notes "what to check, where in the game"] [--commit <sha>]
     python -I scripts/test_requests.py list [--all] [--mine] [--json]
     python -I scripts/test_requests.py show T-7KQ2 [--json]
-    python -I scripts/test_requests.py claim T-7KQ2 [--again]
+    python -I scripts/test_requests.py claim T-7KQ2 [--again] [--commit <confirmed-sha>]
     python -I scripts/test_requests.py verify T-7KQ2 --repo <test worktree>
     python -I scripts/test_requests.py renew [T-7KQ2]
     python -I scripts/test_requests.py release T-7KQ2
@@ -196,6 +196,10 @@ def replay(events, now=None):
                     t.setdefault("claim_commits", {})[sender] = commit
                 else:
                     t.get("claim_commits", {}).pop(sender, None)
+                if head:
+                    t.setdefault("claim_heads", {})[sender] = head
+                else:
+                    t.get("claim_heads", {}).pop(sender, None)
             action = "renew" if mine else "claim"
         elif action == "release" and mine:
             del t["claims"][sender]
@@ -511,6 +515,14 @@ def cmd_claim(args, config):
             return refuse("#%d is %s" % (t["pr"], info["state"]))
         t["head"] = info["head"]
         commit = commit or t.get("commit") or info["head"]
+        if args.commit and not same_commit(args.commit, commit):
+            return refuse("--commit must confirm %s; ask the requester to update the card to choose another commit"
+                          % commit)
+        before = t.get("requested_head")
+        changed = not same_commit(before, info["head"]) if before else not same_commit(commit, info["head"])
+        if changed and not args.commit:
+            return refuse("%s No claim sent; after the requester confirms, use claim %s --commit %s"
+                          % (commit_notice(t), t["id"], commit))
         text += "\nCommit: %s\nHead: %s" % (commit, info["head"])
     send(config, rid, text)
     others = sorted(u for u in t["claims"] if u != me)
@@ -538,6 +550,8 @@ def cmd_verify(args, config):
         info = pr_info(t["pr"])
         if not approved(info) or info["state"] in ("merged", "closed"):
             raise team_chat.ChatError("the PR is no longer open and approved for testing")
+        if t.get("claim_heads", {}).get(me) != info["head"]:
+            raise team_chat.ChatError("the PR head moved since the claim; ask the requester and claim again")
         base = info.get("base") or ""
         if not isinstance(base, str) or not COMMIT.fullmatch(base):
             raise team_chat.ChatError("GitHub did not return the PR base commit")
@@ -677,6 +691,7 @@ def main(argv=None):
     p = sub.add_parser("claim", help="start testing a request")
     p.add_argument("id")
     p.add_argument("--again", action="store_true", help="test a request you already reported on")
+    p.add_argument("--commit", type=commit_arg, help="confirm the pin after the requester confirms a moved head")
     p = sub.add_parser("verify", help="verify the claimed commit belongs to the PR and print its diff for review")
     p.add_argument("id")
     p.add_argument("--repo", required=True, help="test worktree; fetches only, does not check out or build")

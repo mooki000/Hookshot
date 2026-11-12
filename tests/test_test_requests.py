@@ -299,14 +299,20 @@ def test_moved_head():
     try:
         CALLS.clear()
         code, sent, out = run(events, "bob", "claim", tid)
-        check(code == 0 and len(sent) == 1, "claim succeeds after head moves")
-        check("commit to build: " + HEAD in out, "claim tells the tester the pinned commit, not the new head")
-        check("head moved since the request" in out and HEAD[:8] in out and NEXT[:8] in out
-              and "requester to confirm" in out, "claim reports both heads and asks the requester to confirm")
+        check(code == 3 and not sent, "an unattended claim is refused after the head moves")
+        check("head moved since the request" in STDERR and HEAD[:8] in STDERR and NEXT[:8] in STDERR
+              and "requester confirms" in STDERR, "refusal reports both heads and asks for confirmation")
         check(CALLS == [2711], "claim approval and moved-head check use one GitHub call")
+        code, sent, _ = run(events, "bob", "claim", tid, "--commit", NEXT)
+        check(code == 3 and not sent, "confirmation cannot silently substitute another commit")
+        CALLS.clear()
+        code, sent, out = run(events, "bob", "claim", tid, "--commit", HEAD[:8])
+        check(code == 0 and len(sent) == 1 and CALLS == [2711], "explicit confirmation permits the pinned claim")
+        check("commit to build: " + HEAD in out, "claim tells the tester the pinned commit, not the new head")
         card = tr.replay(events)[tid]
         check(card.get("commit") == HEAD and card["status"] == "open", "a moved head does not move or close the pin")
         check(card.get("claim_commits", {}).get(BOB) == HEAD, "claim stores the commit the tester was told")
+        check(card.get("claim_heads", {}).get(BOB) == NEXT, "claim retains the head observed for this tester")
         check("head moved since the request" in tr.describe(card), "moved-head warning survives replay")
         CALLS.clear()
         code, _, out = run(events, "cat", "list")
@@ -652,6 +658,13 @@ def test_verify_membership():
                               "tester refuses a fetchable outside commit and releases its claim")
                         check(BOB not in tr.replay(events)["T-7KQ2"]["claims"], "failed verification leaves no claim")
                     check(real_git(repo, "rev-parse", "HEAD") == before, "verification never checks out or builds code")
+                events = [ev("ann", int(tr.time.time() // 60), REQ["body"]
+                             + "\nCommit: %s\nHead: %s" % (pin, head))]
+                run(events, "bob", "claim", "T-7KQ2")
+                GITHUB[2711]["head"] = outsider
+                code, sent, _ = run(events, "bob", "verify", "T-7KQ2", "--repo", repo)
+                check(code == 3 and sent == ["%s T-7KQ2 release" % T] and "head moved since the claim" in STDERR,
+                      "a head move after claiming stops verification and releases the claim")
         finally:
             GITHUB.clear()
 

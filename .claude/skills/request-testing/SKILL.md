@@ -71,7 +71,8 @@ python -I scripts/test_requests.py update T-XXXX --commit <new-sha>
   to request the new commit on the same card. Only the requester can update it. Earlier results stay in the record
   but do not satisfy the new pin; current testers still finish the commit they were told at claim time.
 - `list` checks approval, PR state and heads on GitHub together (one call per PR, as before).
-  `show` checks one PR. If the head moved, confirm which commit testers should build rather than silently changing it.
+  `show` checks one PR. A moved head blocks unattended claims; confirm the existing pin explicitly with the tester,
+  or use `update --commit <new-sha>` to request the new commit.
 - Testers must build the card's commit and name the actual build with `done --commit <built-sha>`; the default is the
   commit recorded at claim time, not a later head.
 

@@ -44,8 +44,10 @@ python -I scripts/test_requests.py claim T-XXXX
 - Others may be testing it too (the script says who); that's fine, each result counts. A refusal (exit code 3) means
   the request is closed, or you already reported on its current pin (`--again` deliberately repeats the same test;
   a card updated to a new commit needs no `--again`).
-- Build the card's commit printed by `claim`, not a newer PR head. If it says the head moved, ask the requester
-  to confirm which commit is wanted; the pin does not change automatically.
+- Build the card's commit printed by `claim`, not a newer PR head. A moved head refuses the claim without sending
+  anything. **An unattended loop must skip it**, not add `--commit` automatically. Ask the requester which is wanted;
+  only after confirmation use `claim T-XXXX --commit <confirmed-pin>`, or wait for the requester to update the card.
+  `verify` also releases the claim if the head moves after claiming, before it checks out or builds anything.
 - A claim lasts 90 minutes and then simply clears. **Keep it alive while you work:** run
   `python -I scripts/test_requests.py renew` (no ID: all your claims) about every 30 minutes, and at every pause in a
   long build or run. Nothing shows on Discord when you renew.
