@@ -570,6 +570,85 @@ with `code=2`; a game refusal has code 1 and a timeout code 3. A timed-out grace
 with its explicit `process_exited:false` result, so callers can decide whether to request force.
 
 
+### Scenarios
+
+`scripts/hookshot_scenario.py` runs a versioned JSON scenario directly through the session layer, with the standard
+library alone. It adapts Nicholas Gower's runner from [#1025](https://github.com/NotRexed/Hookshot/pull/1025), with his
+original files retained in the import history. This is part 3 of 3 of that takeover, stacked on the session layer
+[#2904](https://github.com/NotRexed/Hookshot/pull/2904); it neither imports nor starts an MCP server.
+
+```sh
+python -I scripts/hookshot_scenario.py check.json --game GAME_DIR --out work/check --json
+```
+
+One small authored example (no save or game data):
+
+```json
+{
+  "version": 1,
+  "name": "capture-check",
+  "launch": {"ready": "present"},
+  "steps": [
+    {"press": {"buttons": ["A"], "hold_ms": 200}},
+    {"wait": {"frames": 60}},
+    {"screenshot": {"path": "next.png"}},
+    {"expect_log": {"pattern": "(the control bridge)", "timeout_ms": 5000}}
+  ]
+}
+```
+
+`launch` defaults to the `test` profile and `ready=bridge`. Its explicit `ready=bridge|present|play` is always waited
+for, not just recorded. It accepts the session's `exe`, `image`, `romfs`, `cwd`, `user`, `data`, `save`, `slot`, `profile`,
+`headless`, `env`, `ready` and `timeout` fields; readiness `timeout` and `stop_timeout` are **seconds**.
+The command line's `--save DIR --slot NN` override the copy source/slot. `--wrapper JSON` is the session's lifetime
+admission argv. No process scan or `force` bypass is added.
+
+To use an existing run, `launch` instead holds `{"attach":"RUN_DIR","ready":"bridge"}` (optionally `timeout`).
+The runner waits for that level too, but never stops an attached game, on success or failure. Save/wrapper overrides
+cannot be applied to an attachment.
+
+Every step holds exactly one verb and an object. The complete file is checked before launching; errors name the
+one-based step index (`step 0` is the file/schema/launch). Unknown fields are errors, not silently ignored.
+
+| Verb | Fields / meaning |
+|---|---|
+| `press` | `buttons` string or list; `hold_ms` (200), `at_ms` (0), `settle_ms` (100), `exclusive`, `wait` (true), `timeout_ms` |
+| `stick` | `which` (`left`/`right` or `L`/`R`), `x`/`y` in -1..1, optional buttons; timing fields as press |
+| `sequence` | Non-empty `steps`: each has `at_ms`, `hold_ms`, buttons and/or `stick` with x/y; outer settle/wait/exclusive/timeout as above |
+| `wait` | Exactly one of `frames` (additional presents), `state`, `map`, or wall `ms`; optional bridge `timeout_ms` |
+| `screenshot` | Optional relative `path` under the output's `shots/`, `after` frame, `timeout_ms`; the acknowledged artifact is retained |
+| `settings` | Optional setting `name`; otherwise the bridge's ordinary option list, not a cheat catalogue |
+| `set_setting` | `name`, integer/boolean `value`; uses the real bridge option setter |
+| `teleport` | `to` map or index; optional `timeout_ms`, `arrive_ms` to wait for the target map after it is taken |
+| `age` | Optional `to` child/adult (none toggles); `arrive_ms` waits for loading to end, not an unchanged map name |
+| `cheat` | Recognized for migration: only `name=teleport` or `name=age`; `to` or legacy `value` (age: 0 child/1 adult). Every other name fails clearly as “not on the bridge” |
+| `expect_log` | `pattern`, optional `regex`, `timeout_ms` (5000), `since` (`previous` by default, or `start`) |
+
+Input fields ending in `_ms` really are **milliseconds**. They become integer game frames at 60 Hz, nearest frame
+with halves up, a positive hold at least one frame: `at_ms=1000, hold_ms=100` means offset 60 and hold 6.
+No seconds/ms script string is assembled. `settle_ms` and `wait.ms` are wall-clock waits that check the process remains
+live; they are not frame waits. The native fixture tests the actual controller frames, not the encoded request text.
+
+By default, `expect_log` begins at the cursor taken **before the immediately preceding step**. That catches a shot
+or input's synchronous log while refusing an old startup line; as the first step it starts after readiness.
+`since:"start"` explicitly searches the whole run. Matching is case-sensitive, with the session layer's bounds and
+UTF-8 cursor rules. A step inserted between an action and its expectation changes that default cursor.
+
+Output defaults to a unique folder under `work/control-scenarios`; an explicit `--out` must be new or empty.
+`transcript.json` is the plain result, `transcript.jsonl`/`transcript.txt` retain events, and the owned session keeps
+its manifest, log and default shots under `run/`. A named shot is under the output's `shots/`. The first failed step
+stops the sequence; these files remain. Owned runs are always quit and waited for in `finally`, with termination
+allowed after the configured stop timeout; this still does **not** promise save-draining shutdown.
+
+Exit status: **0** pass, **1** a failed step, **2** usage, **3** timeout. `--json` prints one complete result.
+For a server, call `run_scenario(scenario, *, game_dir, out=None, wrapper=None, save=None, slot=None, on_event=None)`.
+It returns `{version,name,out,run,owned,ok,exit_code,failed_step,error,artifacts,transcript}`; `on_event` receives each
+plain event dictionary. Invalid input raises the session layer's `Failed(2)` before launch; ordinary step failures
+are in the returned transcript.
+
+Version 1 deliberately removes the original runner's `--build` and MCP-specific launch fields: **building is a
+separate command**, with its own admission and evidence, never a scenario side effect.
+
 ## Known limits
 
 - **Windows** is built and its pipe tested in CI only (the windows-2022 runner): the bridge inside a Windows game build,

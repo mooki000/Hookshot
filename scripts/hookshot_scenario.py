@@ -1,249 +1,388 @@
-"""Run a scripted scenario against a built game through the MCP server's own session code.
+"""Run a versioned scenario through the command-line session layer, without an MCP package.
 
-    python -I scripts/mcp_scenario.py scenario.json [--game-dir DIR] [--user DIR] [--out DIR] [--build]
+    python -I scripts/hookshot_scenario.py scenario.json --game GAME_DIR [--out DIR]
+           [--wrapper JSON] [--save DIR --slot NN] [--json]
 
-The scenario is a JSON object:
+A scenario has version 1, a name, a launch object and a non-empty list of one-key steps.
+Press/stick holds and sequence at_ms/hold_ms are milliseconds, converted at 60 game presents
+per second, nearest frame with halves up and a positive hold of at least one frame.
+The first failure stops the steps; transcripts, the run log and screenshots remain in the
+output folder. Owned games are stopped in finally; an attached game is never stopped.
+Building is a separate operation, not a scenario step or flag. See docs/control.md.
 
-    {
-      "name": "title-and-menu",
-      "launch": {"cheats": true, "wait_ready": true},
-      "steps": [
-        {"press": {"buttons": ["A"], "hold_ms": 200}},
-        {"wait": {"ms": 2000}},
-        {"expect_log": {"pattern": "hid: live input"}},
-        {"screenshot": {"path": "title.png"}},
-        {"settings": {}},
-        {"set_setting": {"name": "text_speed", "value": 3}},
-        {"cheat": {"name": "heart_protection", "value": 1}}
-      ]
-    }
-
-`launch` takes the fields of `LaunchOptions` (docs/mcp.md). A step is one of `press`, `stick`, `sequence`, `wait`,
-`screenshot`, `settings`, `set_setting`, `cheat` or `expect_log`. The run fails on the first press or sequence the game
-does not acknowledge, on a screenshot that never arrives and on an `expect_log` that does not match.
-
-Everything the run makes goes to the output folder (default `work/mcp/scenarios/<name>/`): `transcript.txt` and the
-screenshots; `work/` is ignored by git. `--build` first rebuilds the game folder with `nx2/make_game.py --update` and
-`HOOKSHOT_KEEP_BUILD_FILES=1` (the build files are kept for the next run); it needs the toolchain the builder uses in
-the environment. One game at a time: launch refuses another `hookshot` unless the scenario's `force` is set.
+Adapted from Nicholas Gower's scenario runner in NotRexed/Hookshot#1025; its unchanged
+files and author are retained in the preceding import commit.
 """
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
-import os
-import subprocess
+import math
 import sys
-from datetime import datetime
+import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import hookshot_ctl as control
 
-import hookshot_mcp as server  # noqa: E402  (the server's own session code: one implementation)
-
-STEP_KEYS = ("press", "stick", "sequence", "wait", "screenshot", "settings", "set_setting", "cheat", "expect_log")
+STEP_KEYS = ("press", "stick", "sequence", "wait", "screenshot", "settings", "set_setting", "teleport", "age",
+             "cheat", "expect_log")
 DEFAULT_TIMEOUT_MS = 5000
+LAUNCH_KEYS = {"exe", "image", "romfs", "cwd", "user", "data", "save", "slot", "profile", "headless", "env",
+               "ready", "timeout", "attach", "stop_timeout"}
+INPUT_KEYS = {"hold_ms", "at_ms", "settle_ms", "wait", "exclusive", "timeout_ms"}
+STEP_FIELDS = {
+    "press": INPUT_KEYS | {"buttons"},
+    "stick": INPUT_KEYS | {"which", "x", "y", "buttons"},
+    "sequence": {"steps", "settle_ms", "wait", "exclusive", "timeout_ms"},
+    "wait": {"ms", "frames", "state", "map", "timeout_ms"},
+    "screenshot": {"path", "after", "timeout_ms"},
+    "settings": {"name"},
+    "set_setting": {"name", "value"},
+    "teleport": {"to", "arrive_ms", "timeout_ms"},
+    "age": {"to", "arrive_ms", "timeout_ms"},
+    "cheat": {"name", "value", "to", "arrive_ms", "timeout_ms"},
+    "expect_log": {"pattern", "since", "regex", "timeout_ms"},
+}
 
 
-class ScenarioError(Exception):
-    pass
+def usage(number, message):
+    raise control.Failed("step %d: %s" % (number, message), 2)
+
+
+def number(value, label, step, low=0, high=3600000, integer=False):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
+        usage(step, "%s must be a finite number in %s..%s" % (label, low, high))
+    if integer and int(value) != value:
+        usage(step, "%s must be a whole number" % label)
+    return value
+
+
+def milliseconds_frames(value, *, hold=False):
+    """Milliseconds -> native game frames: nearest, halves up, with a minimum one-frame positive hold"""
+    frames = math.floor(value * 60 / 1000 + 0.5)
+    return max(1, frames) if hold else frames
+
+
+def input_step(value, step, stick=None):
+    number(value.get("at_ms", 0), "at_ms", step)
+    number(value.get("hold_ms", 200), "hold_ms", step, low=0.001)
+    result = {"at": milliseconds_frames(value.get("at_ms", 0)),
+              "frames": milliseconds_frames(value.get("hold_ms", 200), hold=True)}
+    buttons = value.get("buttons")
+    if buttons == [] and stick is not None:
+        buttons = None
+    if buttons is not None:
+        if not (isinstance(buttons, str) and buttons or isinstance(buttons, list) and buttons and
+                all(isinstance(b, str) and b for b in buttons)):
+            usage(step, "buttons must be a non-empty string or list of names")
+        result["buttons"] = buttons
+    if stick is not None:
+        if stick not in ("left", "right", "L", "R", "l", "r"):
+            usage(step, "stick must be left or right (L or R)")
+        result.update(stick="L" if stick in ("left", "L", "l") else "R",
+                      x=number(value.get("x", 0), "x", step, -1, 1),
+                      y=number(value.get("y", 0), "y", step, -1, 1))
+    if buttons is None and stick is None:
+        usage(step, "an input needs buttons or a stick")
+    return result
+
+
+def validate_scenario(data):
+    if not isinstance(data, dict):
+        usage(0, "the scenario must be a JSON object")
+    if type(data.get("version")) is not int or data["version"] != 1:
+        usage(0, "version must be 1")
+    if set(data) - {"version", "name", "launch", "steps"}:
+        usage(0, "unknown scenario fields: %s" % ", ".join(sorted(set(data) - {"version", "name", "launch", "steps"})))
+    if "name" in data and (not isinstance(data["name"], str) or not data["name"].strip()):
+        usage(0, "name must be a non-empty string")
+    launch = data.get("launch", {})
+    if not isinstance(launch, dict) or set(launch) - LAUNCH_KEYS:
+        usage(0, "launch must be an object of documented session fields")
+    for key in LAUNCH_KEYS - {"env", "headless", "timeout", "stop_timeout"}:
+        if key in launch and not isinstance(launch[key], str):
+            usage(0, "launch.%s must be a string" % key)
+    if launch.get("ready", "bridge") not in ("bridge", "present", "play"):
+        usage(0, "launch.ready must be bridge, present or play")
+    if launch.get("profile", "test") not in ("default", "test"):
+        usage(0, "launch.profile must be default or test")
+    if "headless" in launch and type(launch["headless"]) is not bool:
+        usage(0, "launch.headless must be a boolean")
+    for key in ("timeout", "stop_timeout"):
+        if key in launch:
+            number(launch[key], "launch." + key, 0, 0.001, 3600)
+    if "env" in launch and (not isinstance(launch["env"], dict) or
+                            not all(isinstance(k, str) and isinstance(v, str) for k, v in launch["env"].items())):
+        usage(0, "launch.env must be an object of string names and values")
+    if "attach" in launch and set(launch) - {"attach", "ready", "timeout"}:
+        usage(0, "an attached run takes only attach, ready and timeout; it is not launched or stopped")
+    steps = data.get("steps")
+    if not isinstance(steps, list) or not steps:
+        usage(0, 'needs a non-empty "steps" list')
+    for index, step in enumerate(steps, 1):
+        if not isinstance(step, dict) or len(step) != 1 or next(iter(step)) not in STEP_KEYS:
+            usage(index, "must hold exactly one of %s" % ", ".join(STEP_KEYS))
+        name, value = next(iter(step.items()))
+        if not isinstance(value, dict):
+            usage(index, "%s takes an object" % name)
+        if set(value) - STEP_FIELDS[name]:
+            usage(index, "%s: unknown fields %s" % (name, ", ".join(sorted(set(value) - STEP_FIELDS[name]))))
+        for key in ("wait", "exclusive", "regex"):
+            if key in value and type(value[key]) is not bool:
+                usage(index, "%s must be a boolean" % key)
+        for key in ("timeout_ms", "arrive_ms"):
+            if key in value:
+                number(value[key], key, index, 0.001)
+        if "settle_ms" in value:
+            number(value["settle_ms"], "settle_ms", index)
+        if name == "press":
+            input_step(value, index)
+        elif name == "stick":
+            input_step(value, index, value.get("which", "left"))
+        elif name == "sequence":
+            items = value.get("steps")
+            if not isinstance(items, list) or not 1 <= len(items) <= 256:
+                usage(index, "sequence needs 1..256 steps")
+            for item in items:
+                if not isinstance(item, dict) or set(item) - {"at_ms", "hold_ms", "buttons", "stick", "x", "y"}:
+                    usage(index, "each sequence item needs only at_ms, hold_ms, buttons, stick, x and y")
+                input_step(item, index, item.get("stick"))
+        elif name == "wait":
+            kinds = set(value) & {"ms", "frames", "state", "map"}
+            if len(kinds) != 1:
+                usage(index, "wait needs exactly one of ms, frames, state or map")
+            key = next(iter(kinds))
+            if key in ("ms", "frames"):
+                number(value[key], key, index, 0 if key == "ms" else 1, 3600000 if key == "ms" else 216000,
+                       integer=key == "frames")
+            elif not isinstance(value[key], str) or not value[key]:
+                usage(index, "wait.%s must be a non-empty string" % key)
+        elif name == "screenshot":
+            if "path" in value:
+                path = value["path"]
+                if not isinstance(path, str) or not path or Path(path).is_absolute() or ".." in Path(path).parts:
+                    usage(index, "screenshot.path must stay relative to the output shots folder")
+            if "after" in value:
+                number(value["after"], "after", index, integer=True)
+        elif name in ("settings", "set_setting", "cheat"):
+            if name != "settings" or "name" in value:
+                if not isinstance(value.get("name"), str) or not value["name"]:
+                    usage(index, "%s needs a name" % name)
+            if name == "set_setting" and not isinstance(value.get("value"), (int, bool)):
+                usage(index, "set_setting needs an integer or boolean value")
+        if name == "teleport" or name == "cheat" and value["name"] == "teleport":
+            target = value.get("to", value.get("value"))
+            if target is None or isinstance(target, bool) or not isinstance(target, (str, int)):
+                usage(index, "teleport needs to (a map name or index)")
+        if name == "age" or name == "cheat" and value["name"] == "age":
+            if "value" in value and (type(value["value"]) is not int or value["value"] not in (0, 1)):
+                usage(index, "cheat age.value must be 0 (child) or 1 (adult)")
+            target = value.get("to", {0: "child", 1: "adult"}.get(value.get("value")))
+            if target is not None and target not in ("child", "adult"):
+                usage(index, "age.to must be child or adult")
+        if name == "expect_log":
+            if not isinstance(value.get("pattern"), str) or not value["pattern"]:
+                usage(index, "expect_log needs a non-empty pattern")
+            if value.get("since", "previous") not in ("previous", "start"):
+                usage(index, 'expect_log.since must be "previous" or "start"')
+    return data
 
 
 def load_scenario(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ScenarioError(f"cannot read the scenario {path}: {exc}") from exc
-    except ValueError as exc:
-        raise ScenarioError(f"{path} is not JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ScenarioError(f"{path}: the scenario must be a JSON object")
-    steps = data.get("steps")
-    if not isinstance(steps, list) or not steps:
-        raise ScenarioError(f"{path}: needs a non-empty \"steps\" list")
-    for number, step in enumerate(steps, 1):
-        if not isinstance(step, dict) or len(step) != 1 or next(iter(step)) not in STEP_KEYS:
-            raise ScenarioError(f"{path}: step {number} must hold exactly one of {', '.join(STEP_KEYS)}")
-    return data
+    except (OSError, ValueError) as exc:
+        usage(0, "cannot read scenario %s: %s" % (path, exc))
+    return validate_scenario(data)
 
 
-def launch_options(args, scenario: dict) -> server.LaunchOptions:
-    """The scenario's launch fields, with the command line's paths and flags on top."""
-    given = scenario.get("launch") or {}
-    if not isinstance(given, dict):
-        raise ScenarioError("\"launch\" must be an object of LaunchOptions fields")
-    known = {field.name for field in dataclasses.fields(server.LaunchOptions)}
-    unknown = sorted(set(given) - known)
-    if unknown:
-        raise ScenarioError(f"unknown launch field(s): {', '.join(unknown)} (see docs/mcp.md)")
-    options = dict(given)
-    overrides = {"game_dir": args.game_dir, "user": args.user, "exe": args.exe, "image": args.image,
-                 "romfs": args.romfs}
-    options.update({key: value for key, value in overrides.items() if value})
-    if args.force:
-        options["force"] = True
-    if args.cache_dir:
-        options["cache_dir"] = args.cache_dir
-    return server.LaunchOptions(**options)
+def scenario_dir(out, scenario):
+    if out is not None:
+        folder = Path(out).absolute()
+        if folder.is_symlink() or folder.exists() and (not folder.is_dir() or any(folder.iterdir())):
+            usage(0, "output folder must be new or empty: %s" % folder)
+        folder.mkdir(parents=True, mode=0o700, exist_ok=True)
+        return folder.resolve()
+    name = scenario.get("name", "scenario")
+    safe = "".join(char if char.isalnum() or char in "-_" else "-" for char in name)[:80]
+    root = Path.cwd() / "work" / "control-scenarios"
+    root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=safe + "-", dir=root)).resolve()
 
 
-def scenario_dir(args, scenario: dict) -> Path:
-    if args.out:
-        return Path(args.out).expanduser().resolve()
-    name = str(scenario.get("name") or datetime.now().strftime("%Y%m%d-%H%M%S"))
-    safe = "".join(char if char.isalnum() or char in "-_" else "-" for char in name)
-    return (ROOT / "work" / "mcp" / "scenarios" / safe).resolve()
+def sleep_ms(session, ms):
+    end = time.monotonic() + ms / 1000
+    while True:
+        session.require_live()
+        left = end - time.monotonic()
+        if left <= 0:
+            return {"wall_ms": ms}
+        time.sleep(min(left, 0.05))
 
 
-def build(game_dir: str | None, language: str | None) -> None:
-    """`nx2/make_game.py --update`: rebuild the folder in place, keeping the build files for the next run."""
-    if not game_dir:
-        raise ScenarioError("--build needs --game-dir (or a launch.game_dir) naming the game folder to update")
-    command = [sys.executable, "-I", str(ROOT / "nx2" / "make_game.py"), "--update", str(game_dir)]
-    if language:
-        command += ["--language", language]
-    print("building: " + " ".join(command), flush=True)
-    result = subprocess.run(command, cwd=str(ROOT), env=dict(os.environ, HOOKSHOT_KEEP_BUILD_FILES="1"))
-    if result.returncode:
-        raise ScenarioError(f"the build stopped ({result.returncode})")
+def attached_ready(session, level, timeout):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        reply = session.request("status", reply_timeout=max(0.001, min(1, end - time.monotonic())))
+        if control.ready_status(reply, level):
+            return reply
+        time.sleep(0.05)
+    raise control.Failed("attached ready=%s timed out" % level, 3)
 
 
-def step_line(step: dict) -> str:
+def step_line(step):
     name, value = next(iter(step.items()))
-    return f"{name} {json.dumps(value, sort_keys=True)}"
+    return "%s %s" % (name, json.dumps(value, sort_keys=True))
 
 
-def run_step(session: server.GameSession, out: Path, step: dict, timeout_ms: int) -> str:
+def run_step(session, out, step, index, previous_cursor):
     name, value = next(iter(step.items()))
-    value = value or {}
-    if not isinstance(value, dict):
-        raise ScenarioError(f"{name} takes an object")
-
-    if name == "press":
-        result = session.press(value.get("buttons"), value.get("hold_ms", 200), value.get("settle_ms", 100),
-                               value.get("wait", True))
-        if not result["acked"]:
-            raise ScenarioError(f"the game did not acknowledge the press {result['line']!r}")
-        return f"press {result['line']}"
-
-    if name == "stick":
-        result = session.move_stick(value.get("which", "left"), value.get("x", 0.0), value.get("y", 0.0),
-                                    value.get("hold_ms", 200), value.get("settle_ms", 100), value.get("wait", True))
-        if not result["acked"]:
-            raise ScenarioError(f"the game did not acknowledge the stick {result['line']!r}")
-        return f"stick {result['line']}"
-
-    if name == "sequence":
-        steps = value.get("steps")
-        if not isinstance(steps, list) or not steps:
-            raise ScenarioError("sequence needs a \"steps\" list")
-        result = session.sequence([server.Step(**item) for item in steps], value.get("settle_ms", 100),
-                                  value.get("wait", True))
-        if not result["acked"]:
-            raise ScenarioError(f"the game did not acknowledge the sequence {result['line']!r}")
-        return f"sequence {result['line']}"
-
+    timeout = value.get("timeout_ms")
+    timeout = timeout / 1000 if timeout is not None else None
+    if name in ("press", "stick", "sequence"):
+        args = {"wait": value.get("wait", True), "exclusive": value.get("exclusive")}
+        if name == "sequence":
+            args["steps"] = [input_step(item, index, item.get("stick")) for item in value["steps"]]
+        else:
+            args.update(input_step(value, index, value.get("which", "left") if name == "stick" else None))
+        result = session.request(name, timeout=timeout, **args)
+        if value.get("settle_ms", 100):
+            sleep_ms(session, value.get("settle_ms", 100))
+        return result
     if name == "wait":
-        session._sleep_ms(int(value.get("ms", 1000)))
-        return f"wait {value.get('ms', 1000)} ms"
-
+        if "ms" in value:
+            return sleep_ms(session, value["ms"])
+        kind = next(k for k in ("frames", "state", "map") if k in value)
+        return session.request("wait", timeout=timeout or 60, event="present" if kind == "frames" else kind,
+                               **{kind: value[kind]})
     if name == "screenshot":
-        path = value.get("path")
-        if path and not Path(path).is_absolute():
-            path = str(out / "shots" / path)
-        info = session.screenshot(path=path)
-        return f"screenshot {info['path']} ({info['bytes']} bytes)"
-
+        path = out / "shots" / value["path"] if value.get("path") else None
+        if path:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        return session.request("shot", timeout=timeout, path=str(path) if path else None, after=value.get("after"))
     if name == "settings":
-        rows = session.read_settings()
-        return (f"settings {len(rows['settings'])} settings, cheats "
-                f"{'on' if rows['cheats_enabled'] else 'off'}, {len(rows['cheats'])} cheat rows")
-
+        return session.request("option_get", name=value.get("name"))
     if name == "set_setting":
-        result = session.set_setting(value["name"], int(value["value"]))
-        return f"set_setting {result['name']}={result['value']}"
-
+        return session.request("option_set", name=value["name"], value=value["value"])
     if name == "cheat":
-        result = session.cheat(value["name"], int(value.get("value", 0)), value.get("item"))
-        return f"cheat {result['name']}={result['value']}"
-
+        name = value["name"]
+        if name not in ("teleport", "age"):
+            raise control.Failed("cheat %r is not on the bridge; only teleport and age are available" % name, 1)
+    if name in ("teleport", "age"):
+        target = value.get("to", value.get("value") if name == "teleport" else {0: "child", 1: "adult"}.get(value.get("value")))
+        result = session.request(name, timeout=timeout or 10, to=target)
+        if value.get("arrive_ms") and result.get("sent"):
+            args = {"event": "map", "map": result.get("map")} if name == "teleport" else {"event": "loading_end"}
+            result = dict(result, arrived=session.request("wait", timeout=value["arrive_ms"] / 1000, **args))
+        return result
     if name == "expect_log":
-        pattern = str(value.get("pattern", ""))
-        if not pattern:
-            raise ScenarioError("expect_log needs a \"pattern\"")
-        timeout = int(value.get("timeout_ms", timeout_ms)) / 1000.0
-        line = session.log_stream.wait_for(lambda text: pattern.lower() in text.lower(), timeout, after=0)
-        if line is None:
-            raise ScenarioError(f"no log line matched {pattern!r} within {value.get('timeout_ms', timeout_ms)} ms")
-        return f"expect_log {pattern!r} -> {line.strip()}"
-
-    raise ScenarioError(f"unknown step {name!r}")
+        return session.expect_log(value["pattern"], 0 if value.get("since") == "start" else previous_cursor,
+                                  timeout or DEFAULT_TIMEOUT_MS / 1000, regex=value.get("regex", False))
+    raise control.Failed("unknown step %r" % name, 2)
 
 
-def main(argv: list[str] | None = None) -> int:
+@control.session_call
+def run_scenario(scenario, *, game_dir, out=None, wrapper=None, save=None, slot=None, on_event=None) -> dict:
+    """Run and retain a plain transcript. Usage errors raise Failed(2); operational failures are in the returned result"""
+    scenario = validate_scenario(scenario)
+    if on_event is not None and not callable(on_event):
+        usage(0, "on_event must be callable")
+    launch = dict(scenario.get("launch", {}))
+    attached = launch.pop("attach", None)
+    if attached and any(v is not None for v in (wrapper, save, slot)):
+        usage(0, "wrapper/save/slot cannot change an attached run")
+    if not attached and not game_dir:
+        usage(0, "a game folder is required")
+    folder = scenario_dir(out, scenario)
+    transcript, artifacts = [], []
+    session, failed, code, failed_step = None, None, 0, None
+    owned = attached is None
+    stop_timeout = launch.pop("stop_timeout", 10)
+
+    def event(kind, **fields):
+        row = dict(event=kind, **fields)
+        transcript.append(row)
+        with (folder / "transcript.jsonl").open("a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(row) + "\n")
+        with (folder / "transcript.txt").open("a", encoding="utf-8", newline="\n") as f:
+            f.write("%s %s\n" % (kind, json.dumps(fields, sort_keys=True)))
+        if on_event:
+            on_event(row)
+
+    try:
+        if attached:
+            session = control.Session.attach(attached)
+            ready = attached_ready(session, launch.get("ready", "bridge"), launch.get("timeout", 600))
+            event("attach", ok=True, result=session.info(), ready=ready)
+        else:
+            launch.setdefault("profile", "test")
+            launch.setdefault("ready", "bridge")
+            if save is not None:
+                launch["save"] = save
+            if slot is not None:
+                launch["slot"] = slot
+            session = control.start_session(game_dir, run=str(folder / "run"), wrapper=wrapper, **launch)
+            event("launch", ok=True, result=session.info())
+        previous_cursor = session.log(lines=0)["cursor"]
+        for index, step in enumerate(scenario["steps"], 1):
+            cursor = session.log(lines=0)["cursor"]
+            try:
+                reply = run_step(session, folder, step, index, previous_cursor)
+            except control.Failed as exc:
+                failed, code, failed_step = str(exc), 3 if exc.code == 3 else 1, index
+                event("step", index=index, step=step, ok=False, error=failed, exit_code=code)
+                break
+            event("step", index=index, step=step, ok=True, result=reply)
+            if "screenshot" in step:
+                artifacts.append({k: reply.get(k) for k in ("path", "frame", "present", "width", "height")})
+            previous_cursor = cursor
+    except (control.Failed, OSError) as exc:
+        failed, code = str(exc), exc.code if isinstance(exc, control.Failed) else 2
+        failed_step = 0 if session is None else len([r for r in transcript if r["event"] == "step"]) + 1
+        event("error", index=failed_step, ok=False, error=failed, exit_code=code)
+    except BaseException as exc:
+        failed, code = str(exc) or type(exc).__name__, 1
+        raise   # (still stop an owned game and retain a failed transcript if the caller is interrupted)
+    finally:
+        if session is not None and owned:
+            try:
+                stopped = session.stop(timeout=stop_timeout, terminate=True)
+                event("stop", ok=stopped.get("process_exited", False), result=stopped)
+            except control.Failed as exc:
+                event("stop", ok=False, error=str(exc), exit_code=exc.code)
+                if failed is None:
+                    failed, code = str(exc), 3 if exc.code == 3 else 1
+        result = {"version": 1, "name": scenario.get("name", "scenario"), "out": str(folder), "owned": owned,
+                  "run": str(session.folder) if session else str(folder / "run") if owned else attached,
+                  "ok": failed is None, "exit_code": code, "failed_step": failed_step, "error": failed,
+                  "artifacts": artifacts, "transcript": transcript}
+        control.write_json(folder / "transcript.json", result)
+    return result
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("scenario", help="the scenario JSON file")
-    parser.add_argument("--game-dir", default=os.environ.get("HOOKSHOT_MCP_GAME_DIR"))
-    parser.add_argument("--user")
-    parser.add_argument("--exe")
-    parser.add_argument("--image")
-    parser.add_argument("--romfs")
-    parser.add_argument("--cache-dir")
-    parser.add_argument("--out", help="output folder (default work/mcp/scenarios/<name>)")
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_MS, metavar="MS",
-                        help="the default timeout of an expect_log step")
-    parser.add_argument("--build", action="store_true", help="rebuild the game folder first (make_game.py --update)")
-    parser.add_argument("--language", help="the language --build writes")
-    parser.add_argument("--force", action="store_true", help="start even if another hookshot runs")
+    parser.add_argument("scenario", help="the versioned JSON file")
+    parser.add_argument("--game", required=True, help="game folder (ignored only for an explicit launch.attach)")
+    parser.add_argument("--out", help="a new or empty output folder")
+    parser.add_argument("--wrapper", help="JSON argv prefix around the session lifetime owner")
+    parser.add_argument("--save", help="save folder copied into the owned test profile")
+    parser.add_argument("--slot", help="copy this slot only")
+    parser.add_argument("--json", action="store_true", help="one JSON transcript result")
     args = parser.parse_args(argv)
-
     try:
         scenario = load_scenario(Path(args.scenario).expanduser())
-        options = launch_options(args, scenario)
-        out = scenario_dir(args, scenario)
-        if args.build:
-            build(options.game_dir, args.language)
-    except ScenarioError as exc:
-        print(f"FAIL: {exc}", file=sys.stderr)
-        return 2
-
-    out.mkdir(parents=True, exist_ok=True)
-    config = server.Config(work_dir=out / "work")
-    session = server.GameSession(config, options)
-    transcript: list[str] = []
-    failed = None
-    try:
-        launched = session.launch()
-        transcript.append(f"launch pid {launched['pid']} run {launched['run_dir']}")
-        print(transcript[-1], flush=True)
-        for number, step in enumerate(scenario["steps"], 1):
-            try:
-                line = run_step(session, out, step, args.timeout)
-            except (ScenarioError, server.ToolError) as exc:
-                failed = str(exc)
-                transcript.append(f"step {number} {step_line(step)}: FAILED: {failed}")
-                print(transcript[-1], flush=True)
-                break
-            transcript.append(f"step {number} {line}")
-            print(transcript[-1], flush=True)
-    except server.ToolError as exc:
-        failed = str(exc)
-        transcript.append(f"launch FAILED: {failed}")
-        print(transcript[-1], flush=True)
-    finally:
-        if session.proc is not None:
-            stopped = session.stop()
-            transcript.append(f"stop {stopped}")
-            print(transcript[-1], flush=True)
-        (out / "transcript.txt").write_text("\n".join(transcript) + "\n", encoding="utf-8")
-
-    print(f"{'FAILED' if failed else 'PASS'}: {len(scenario['steps'])} steps, {out}", flush=True)
-    if failed:
-        print(f"FAIL: {failed}", file=sys.stderr)
-        return 1
-    return 0
+        wrapper = json.loads(args.wrapper) if args.wrapper else None
+        result = run_scenario(scenario, game_dir=args.game, out=args.out, wrapper=wrapper, save=args.save, slot=args.slot,
+                              on_event=None if args.json else lambda row: print(json.dumps(row), flush=True))
+    except (control.Failed, OSError, ValueError) as exc:
+        print("hookshot_scenario: %s" % exc, file=sys.stderr)
+        return exc.code if isinstance(exc, control.Failed) else 2
+    print(json.dumps(result) if args.json else "%s: %s" % ("PASS" if result["ok"] else "FAILED", result["out"]))
+    return result["exit_code"]
 
 
 if __name__ == "__main__":
