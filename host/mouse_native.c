@@ -120,6 +120,7 @@ void hos_mouse_camera(uint64_t cam) {
     if (state != 3 && state != 4) {
         /* (at once: the stick takes the next motion, not one burst once the 150 ms run out) */
         InterlockedExchange64(&last_hook_ns, 0);
+        target_ok = 0;   /* the game's angles may change while another camera owns the view */
         /* (each state seen leaving the mouse to the stick, once: what another view, Z-targeting, climbing or swimming,
            is, to add here if one of them should turn with the mouse) */
         static uint32_t said[8];

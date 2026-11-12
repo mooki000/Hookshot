@@ -161,18 +161,21 @@ int main(void) {
     clock_ns += 200000000LL;   /* no camera for 200 ms (the pause menu): the stick again */
     CHECK(hos_mouse_native() == -1);
     /* aiming in first person (the slingshot): the camera keeps updating, state 0, another draws: the stick takes it */
-    state(4);
-    frame(0, 0);   /* the camera's a moment ago (the hook ran: hos_mouse_native would give 1 for 150 ms) */
-    state(0);
-    putf(YAW, 0);
-    frame(10, 0);
-    CHECK(near(getf(YAW), 0.0f) && move_x == 10);
-    CHECK(hos_mouse_native() == -1);   /* at once, not 150 ms later */
-    move_x = 0;
-    state(3);   /* following Link again: the mouse turns it */
-    frame(10, 0);
-    CHECK(near(getf(YAW), -1.0f));
-    CHECK(hos_mouse_native() == 1);
+    for (uint32_t resumed = 3; resumed <= 4; resumed++) {
+        state(4);
+        frame(0, 0);   /* the camera's a moment ago (the hook ran: hos_mouse_native would give 1 for 150 ms) */
+        state(0);
+        putf(YAW, 0), putf(PITCH, 20);
+        frame(10, 5);
+        CHECK(near(getf(YAW), 0.0f) && near(getf(PITCH), 20.0f) && move_x == 10 && move_y == 5);
+        CHECK(hos_mouse_native() == -1);   /* at once, not 150 ms later */
+        move_x = move_y = 0;
+        state(resumed);   /* following Link or turned by the player: start at the game's current angles */
+        frame(10, 5);
+        CHECK(near(getf(YAW), -1.0f));
+        CHECK(near(getf(PITCH), 20.5f));
+        CHECK(hos_mouse_native() == 1);
+    }
     if (!fails) printf("PASS\n");
     return fails != 0;
 }
