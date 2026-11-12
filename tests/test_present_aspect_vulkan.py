@@ -35,6 +35,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
     parser.add_argument("--headers", required=True, type=Path)
+    parser.add_argument("--device", help="case-insensitive device-name substring; no fallback to another device")
     args = parser.parse_args()
     source = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     begin = source.index("    const PresentAspect aspect{", source.index("void present_image("))
@@ -55,7 +56,8 @@ def main():
         compiler = shutil.which(args.cxx)
         if compiler:
             env["PATH"] = str(Path(compiler).parent) + os.pathsep + env.get("PATH", "")
-        subprocess.run([str(exe)], env=env, check=True, timeout=60)
+        subprocess.run([str(exe)] + (["--device", args.device] if args.device is not None else []),
+                       env=env, check=True, timeout=60)
 
 
 if __name__ == "__main__":
