@@ -36,6 +36,7 @@ def between(text, first, last):
 
 
 PRELUDE = r"""
+#define _CRT_SECURE_NO_WARNINGS
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -320,7 +320,7 @@ class WalkKeyTests(unittest.TestCase):
             tmp = Path(tmp)
             (tmp / "t.c").write_text(source, encoding="utf-8")
             binary = tmp / ("t.exe" if sys.platform == "win32" else "t")
-            build = subprocess.run([compiler, "-std=gnu11", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror",
+            build = subprocess.run([compiler, "-std=gnu11", "-D_CRT_SECURE_NO_WARNINGS", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror",
                                     "-Wno-unused-function", "-I", str(ROOT / "gpu" / "vk"), str(tmp / "t.c"), "-o", str(binary)],
                                    text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
