@@ -490,7 +490,8 @@ main's `game` snapshot has no sample timestamp, so this is **not a freshness gua
 after admission. A failed start or readiness timeout terminates and reaps the game it started, leaves a failed
 manifest and log, and explains the last condition. It never silently abandons a timed-out game.
 
-`stop` asks the original owner to send the bridge's `quit`, then waits for the child process to exit. A quit timeout
+`stop` asks the original owner to send the bridge's `quit`, then waits for the game, supervisor and optional wrapper
+to exit and close their log handles. `finish` also refuses while any of those identities is still live. A quit timeout
 returns status 3 with `process_exited:false`; the game stays owned and running. Only `--terminate` allows the original
 owner to terminate its child after that timeout (and kill it after five more seconds). The manifest reports the method
 and actual exit code. An attaching client never sends an OS signal to a pid from disk; if the owner is gone it refuses
@@ -523,8 +524,9 @@ past EOF refuses, rather than treating an old cursor as a new file. No bridge lo
 
 ### Manifest version 1
 
-`manifest.json` is UTF-8 JSON, atomically replaced under `manifest.lock`. Consumers reject unknown schema versions.
-Paths are absolute. Times are UTC ISO-8601; unavailable values are JSON `null`. Only explicitly set environment names
+`manifest.json` is UTF-8 JSON, atomically replaced under `manifest.lock`; readers hold the same lock so they cannot
+prevent replacement on Windows. Consumers reject unknown schema versions. Paths use the platform's absolute spelling
+(a Windows short name is not a link). Times are UTC ISO-8601; unavailable values are JSON `null`. Only explicitly set environment names
 and values are recorded, not the inherited environment (explicit `--env` values can themselves be private).
 
 | Field | Meaning |
@@ -535,7 +537,7 @@ and values are recorded, not the inherited environment (explicit `--env` values 
 | `user`, `save_source`, `slot` | Effective user folder, copied source or null, selected slot or null |
 | `socket`, `socket_dir`, `log` | Unix socket or Windows pipe name, allocated socket folder or null, run log |
 | `pid`, `process_start` | Game pid and birth identity: Linux boot ID/start ticks, Windows process-creation FILETIME |
-| `owner` | Original supervisor's `pid` and `birth` identity; not authority to signal an arbitrary process |
+| `owner`, `launcher` | Supervisor and optional wrapper process `pid`/`birth` identities; never authority to signal an arbitrary process |
 | `created_at`, `started_at`, `ended_at` | Run creation, game start and final receipt times |
 | `state` | `queued`, `starting`, `running`, `stopping`, `finished` or `failed` |
 | `ready`, `ready_timeout`, `ready_reply` | Requested level, seconds after admission, observed successful status when available |
@@ -553,6 +555,10 @@ The standard-library API for a future thin server is `start_session(...)`, `list
 `Session.info()`, `Session.request(cmd, timeout=None, **args)`, `Session.log(...)`, `Session.expect_log(...)`,
 `Session.stop(timeout=10, terminate=False)` and `Session.finish()`. `Session.connect()` returns a separate `Bridge`
 for streaming; serialize requests on a connection, and keep subscriptions on their own connection.
+`start_session` and `Session.attach` return a session handle; its methods return ordinary dictionaries, and `list_runs`
+returns a list of manifest dictionaries. Filesystem, JSON and argument failures at these API boundaries raise `Failed`
+with `code=2`; a game refusal has code 1 and a timeout code 3. A timed-out graceful stop instead returns the manifest
+with its explicit `process_exited:false` result, so callers can decide whether to request force.
 
 
 ## Known limits
