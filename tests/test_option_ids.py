@@ -29,7 +29,7 @@ def main():
     numeric = re.findall(r"\bid\s*==\s*(\d+)\b", option)
     cases = names + numeric
     # Skip-title already owns 44; Walk and Item wheel are on concurrent branches.
-    for name, value in (("HOS_OPT_SKIP_TITLE", 44), ("HOS_OPT_WALK_MODE", 52), ("HOS_OPT_WALK_SPEED", 53),
+    for name, value in (("HOS_OPT_SKIP_TITLE", 44), ("HOS_OPT_WALK_MODE", 49), ("HOS_OPT_WALK_SPEED", 50),
                         ("HOS_OPT_ITEM_WHEEL", 60)):
         if name not in names:
             cases.append(str(value))
@@ -46,7 +46,7 @@ def main():
         assert result.returncode == 0, result.stderr
         # Prove the guard catches collisions with Walk's current IDs, an implicit enum value,
         # and a legacy numeric ID, not just collisions among explicit constants.
-        for collision in (52, 53, 60, 33, 7):
+        for collision in (49, 50, 60, 33, 7):
             broken = source.replace("HOS_OPT_FOV = 51", f"HOS_OPT_FOV = {collision}")
             assert broken != source
             assert compile(broken).returncode != 0, f"Missed ID collision at {collision}"
