@@ -28,7 +28,7 @@ python -I scripts/test_requests.py list --json
 `list` is already in the order to pick from: requests nobody has tested or is testing first, then ones someone is
 testing with no result yet, then ones that have results (oldest first within each), and last the ones waiting for a
 maintainer (`"approved": false`: not by a collaborator and not labelled `testing wanted`), which can't be claimed:
-skip them. Go down it and take the **first
+skip them. `list` checks approval and head together; `claim` checks again. Go down it and take the **first
 one this PC fits** (its needs: a request for "AMD RX 6000 or newer" is not for an RX 580 or an NVIDIA card; no needs
 means any PC). Skip the ones you are testing or already reported on (`claims` and `results` in the JSON name the
 testers), unless the PR changed since your result. If none fit, say so and stop. Show the user the pick (ID, summary,
@@ -42,6 +42,8 @@ python -I scripts/test_requests.py claim T-XXXX
 
 - Others may be testing it too (the script says who); that's fine, each result counts. A refusal (exit code 3) means
   the request is closed, or you already reported on it (`--again` only if the PR changed since).
+- Build the card's commit printed by `claim`, not a newer PR head. If it says the head moved, ask the requester
+  to confirm which commit is wanted; the pin does not change automatically.
 - A claim lasts 90 minutes and then simply clears. **Keep it alive while you work:** run
   `python -I scripts/test_requests.py renew` (no ID: all your claims) about every 30 minutes, and at every pause in a
   long build or run. Nothing shows on Discord when you renew.
@@ -58,9 +60,10 @@ build, look at what the PR changes that runs on this PC (build and Python script
 downloads, deletes or reaches outside the repository); if something does what the PR doesn't explain, stop, release
 the claim and tell the user.
 
-1. Get the PR's head in its own folder, not on top of the user's work: `git worktree add --detach
+1. Fetch the PR in its own folder, not on top of the user's work: `git worktree add --detach
    ../Hookshot-test-<pr>`, then `gh pr checkout <pr>` inside it (this works in a jj repository too: a jj workspace
-   has no `.git` for `gh` to use). Note the commit you built.
+   has no `.git` for `gh` to use). Then `git checkout --detach <commit-from-claim>`. If that commit cannot be
+   fetched, ask the requester rather than substituting another. Note the actual commit you built.
 2. Build and run as in [docs/development.md](../../../docs/development.md) (*Use*, *Building*, *Running a test*). If
    the notes compare against main, build main the same way and run both under the same conditions, swapping the
    order once.
@@ -78,7 +81,7 @@ request's ID:
 ```
 Test request T-XXXX: pass | fail | mixed
 
-Hardware: <GPU, VRAM>, driver <version>, <OS>. Built <commit> (the PR head)<, against main <commit>>.
+Hardware: <GPU, VRAM>, driver <version>, <OS>. Built <commit> (the card's commit)<, against main <commit>>.
 What I checked: ...
 Result: ... (numbers in a small table when comparing; the log lines that matter; screenshot links)
 ```
@@ -90,11 +93,15 @@ Result: ... (numbers in a small table when comparing; the log lines that matter;
 Then mark it done with that comment's link (the URL `gh pr comment` prints):
 
 ```
-python -I scripts/test_requests.py done T-XXXX --result pass --comment https://github.com/NotRexed/Hookshot/pull/<pr>#issuecomment-<n>
+python -I scripts/test_requests.py done T-XXXX --commit <built-sha> --result pass --comment https://github.com/NotRexed/Hookshot/pull/<pr>#issuecomment-<n>
 ```
 
-`--result` is `pass`, `fail` or `mixed`. The script checks the link is a comment on the request's PR. Discord then
-shows ✅ with the result and the link. Remove the test folder: `git worktree remove ../Hookshot-test-<pr>`.
+Name the commit actually built in `done --commit`, even if the head or the card changed while testing. Without it,
+`done` uses the commit recorded at claim time. `--result` is `pass`, `fail` or `mixed`; the link must be a comment on
+the request's PR. An older commit's result is labelled as such, not a test of the new head. The separate Discord
+relay needs support for these fields; use `show` and the comment to check the commit if the card omits it.
+If GitHub cannot be reached, `done` still records the tested commit and says its head comparison was unavailable.
+Remove the test folder: `git worktree remove ../Hookshot-test-<pr>`.
 
 ## The testing loop
 
