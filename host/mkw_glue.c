@@ -96,6 +96,7 @@ static void record_exception(EXCEPTION_POINTERS *info) {
     context.guest_registers = c ? c->x : NULL;
 #ifdef _WIN32
     context.native_context = info->ContextRecord;
+    context.exception_filter = 1;
 #else
     context.signal_number = (int)rec->ExceptionInformation[13];
     context.signal_code = (int)(intptr_t)rec->ExceptionInformation[14];
@@ -228,8 +229,7 @@ static LONG WINAPI report_crash(EXCEPTION_POINTERS *info) {
                         (unsigned long long)peek_guest(base + row + 16), (unsigned long long)peek_guest(base + row + 24));
         }
     }
-    void hos_log_flush_crash(void);
-    hos_log_flush_crash();
+    hos_log_flush();
     void hos_hostcall_stats(void);
     hos_hostcall_stats();   /* (HOS_HOSTCALL_STATS=1: the host calls made, and the last 256 of them) */
     return EXCEPTION_CONTINUE_SEARCH;

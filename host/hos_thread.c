@@ -6,6 +6,7 @@
    +0x1F8, so lifted SDK code that reads it inline finds the same thread the HLE knows. */
 #include "hos.h"
 #include "hos_crash_record.h"
+#include "hos_report_prefixes.h"
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
@@ -301,11 +302,6 @@ static void log_flush(void) {}
 #endif
 
 void hos_log_flush(void) { log_flush(); }
-void hos_log_flush_crash(void) {
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    log_drain_raw();   /* never wait for the writer or allocate a batch after a fault */
-#endif
-}
 
 void hos_log(const char *fmt, ...) {
     char buf[1024], line[1100];
@@ -313,7 +309,9 @@ void hos_log(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
-    if (!strncmp(buf, "vk: FATAL:", 10))
+    if (!strncmp(buf, HOS_REPORT_DEVICE_LOST_PREFIX, sizeof HOS_REPORT_DEVICE_LOST_PREFIX - 1))
+        hos_crash_record_fatal(NULL, "device lost");
+    else if (!strncmp(buf, HOS_REPORT_FATAL_PREFIX, sizeof HOS_REPORT_FATAL_PREFIX - 1))
         hos_crash_record_fatal(NULL, strstr(buf, "VK_ERROR_DEVICE_LOST") ? "device lost" : "Vulkan fatal");
     snprintf(line, sizeof line, "[hos %s] %s\n", cur ? cur->name : "host", buf);
     extern volatile int hos_control_on;   /* (control.c: log lines for its subscribers) */
@@ -334,7 +332,7 @@ void hos_fatal(Ctx *c, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
-    hos_log_flush_crash();
+    log_flush();
     fprintf(stderr, "[hos %s] FATAL: %s", cur ? cur->name : "host", buf);
     if (c) fprintf(stderr, " (lr %#llx sp %#llx)", (unsigned long long)c->x[30], (unsigned long long)c->x[31]);
     fprintf(stderr, "\n");

@@ -55,7 +55,7 @@ static HosReportPrivacy privacy;
 static File marker = NO_FILE, staging = NO_FILE;
 static char pending_dir[PATH_CAP], running_dir[PATH_CAP], marker_path[PATH_CAP], staging_path[PATH_CAP];
 static char published_stem[96];
-static int ready, claimed;
+static int ready, claimed, prune_failed;
 static char record_bytes[TEXT_CAP];
 static Text record = {record_bytes, sizeof record_bytes, 0, 0};
 #ifdef _WIN32
@@ -166,7 +166,11 @@ static File open_file(const char *path, int create, int exclusive) {
 static void close_file(File f) { if (f != NO_FILE) CloseHandle(f); }
 static int remove_file(const char *path) { wchar_t w[PATH_CAP]; return wide(path, w) && DeleteFileW(w); }
 static int make_dir(const char *path) {
-    wchar_t w[PATH_CAP]; return wide(path, w) && (CreateDirectoryW(w, NULL) || GetLastError() == ERROR_ALREADY_EXISTS);
+    wchar_t w[PATH_CAP];
+    if (!wide(path, w) || (!CreateDirectoryW(w, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)) return 0;
+    const DWORD attributes = GetFileAttributesW(w);
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+           !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
 }
 static int read_file(File f, void *dst, size_t size, uint64_t at) {
     LARGE_INTEGER off; off.QuadPart = (LONGLONG)at; DWORD got = 0;
@@ -185,7 +189,10 @@ static File open_file(const char *path, int create, int exclusive) {
 }
 static void close_file(File f) { if (f != NO_FILE) close(f); }
 static int remove_file(const char *path) { return unlink(path) == 0; }
-static int make_dir(const char *path) { return mkdir(path, 0700) == 0 || errno == EEXIST; }
+static int make_dir(const char *path) {
+    struct stat st;
+    return (mkdir(path, 0700) == 0 || errno == EEXIST) && lstat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
 static int read_file(File f, void *dst, size_t size, uint64_t at) { return pread(f, dst, size, (off_t)at) == (ssize_t)size; }
 static int reset_file(File f) { return ftruncate(f, 0) == 0 && lseek(f, 0, SEEK_SET) == 0; }
 static int durable(File f) { return fsync(f) == 0; }
@@ -422,6 +429,7 @@ static void format_record(Text *b, const Session *s, const HosCrashContext *c, u
         host_stack(b, c); guest_stack(b, c);
     } else {
         field(b, "crash_handler", "not observed");
+        field(b, "termination_note", "ended from outside or lost power, not necessarily a crash");
         if (facts && facts->known) {
             decimal_field(b, "log_size_bytes", facts->bytes); decimal_field(b, "log_tail_bytes", facts->tail);
             timestamp(facts->epoch, when); field(b, "log_mtime_utc", when);
@@ -431,7 +439,7 @@ static void format_record(Text *b, const Session *s, const HosCrashContext *c, u
         }
     }
 #ifdef _WIN32
-    field(b, "dump", c && dump_go ? "requested locally, not for sharing" : "off");
+    field(b, "dump", c && c->exception_filter && dump_go ? "requested locally, not for sharing" : "off");
 #else
     field(b, "dump", "off");
 #endif
@@ -512,6 +520,90 @@ static void recover_one(const char *name) {
     }
     close_file(old);
 }
+/* Startup retention only. A failing thread never enumerates or prunes files. */
+enum { PENDING_KEEP = 15, PENDING_NAME = 96 };
+static const char *pending_time(const char *name) {
+    const char *p = !strncmp(name, "crash-", 6) ? name + 6 : !strncmp(name, "unclean-", 8) ? name + 8 : NULL;
+    if (!p || length(name, PENDING_NAME) >= PENDING_NAME || length(p, 17) < 16) return NULL;
+    for (unsigned i = 0; i < 16; ++i) {
+        if (i == 8) { if (p[i] != 'T') return NULL; }
+        else if (i == 15) { if (p[i] != 'Z') return NULL; }
+        else if (p[i] < '0' || p[i] > '9') return NULL;
+    }
+    const char *suffix = p + 16;
+    if (*suffix == '-') {
+        ++suffix;
+        if (*suffix < '0' || *suffix > '9') return NULL;
+        while (*suffix >= '0' && *suffix <= '9') ++suffix;
+        if (*suffix++ != '-' || *suffix < '0' || *suffix > '9') return NULL;
+        while (*suffix >= '0' && *suffix <= '9') ++suffix;
+    }
+    return !strcmp(suffix, ".txt") ? p : NULL;
+}
+static int pending_newer(const char *a, const char *b) {
+    const int time_order = memcmp(pending_time(a), pending_time(b), 16);
+    return time_order ? time_order : strcmp(a, b); /* deterministic ties within one UTC second */
+}
+static void prune_entry(const char *name, char keep[PENDING_KEEP][PENDING_NAME], int *count, int deleting) {
+    char path[PATH_CAP];
+    if (!pending_time(name) || !join(path, sizeof path, pending_dir, name)) return;
+#ifdef _WIN32
+    wchar_t w[PATH_CAP]; if (!wide(path, w)) return;
+    const DWORD attributes = GetFileAttributesW(w);
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) return;
+#else
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode)) return; /* do not follow matching symlinks */
+#endif
+    if (deleting) {
+        for (int i = 0; i < *count; ++i) if (!strcmp(keep[i], name)) return;
+        if (!remove_file(path)) {
+#ifdef _WIN32
+            if (GetLastError() != ERROR_FILE_NOT_FOUND) prune_failed = 1;
+#else
+            if (errno != ENOENT) prune_failed = 1;
+#endif
+        }
+        return;
+    }
+    if (*count == PENDING_KEEP && pending_newer(name, keep[*count - 1]) <= 0) return;
+    int at = *count < PENDING_KEEP ? (*count)++ : PENDING_KEEP - 1;
+    while (at && pending_newer(name, keep[at - 1]) > 0) {
+        memcpy(keep[at], keep[at - 1], PENDING_NAME); --at;
+    }
+    memcpy(keep[at], name, strlen(name) + 1);
+}
+static void prune_pending(void) {
+    char keep[PENDING_KEEP][PENDING_NAME] = {{0}};
+    int count = 0;
+    /* First select, then remove: directory order never decides which records stay. */
+    for (int deleting = 0; deleting < 2; ++deleting) {
+#ifdef _WIN32
+        char pattern[PATH_CAP]; wchar_t w[PATH_CAP]; WIN32_FIND_DATAW data;
+        if (!join(pattern, sizeof pattern, pending_dir, "*") || !wide(pattern, w)) return;
+        HANDLE find = FindFirstFileW(w, &data); if (find == INVALID_HANDLE_VALUE) return;
+        do {
+            char name[PENDING_NAME];
+            if (WideCharToMultiByte(CP_UTF8, 0, data.cFileName, -1, name, sizeof name, NULL, NULL))
+                prune_entry(name, keep, &count, deleting);
+        } while (FindNextFileW(find, &data));
+        FindClose(find);
+#else
+        DIR *dir = opendir(pending_dir); if (!dir) return;
+        struct dirent *entry;
+        while ((entry = readdir(dir))) prune_entry(entry->d_name, keep, &count, deleting);
+        closedir(dir);
+#endif
+    }
+}
+void hos_crash_record_log_notes(void) {
+    if (prune_failed) {
+        prune_failed = 0;
+        void hos_log(const char *fmt, ...);
+        hos_log("crash records: some old pending records could not be removed");
+    }
+}
+
 static void recover(void) {
 #ifdef _WIN32
     char pattern[PATH_CAP]; wchar_t w[PATH_CAP]; WIN32_FIND_DATAW data;
@@ -651,6 +743,7 @@ void hos_crash_record_start(const char *dir, const char *version) {
         !join(pending_dir, sizeof pending_dir, root, "pending") || !make_dir(pending_dir) ||
         !join(running_dir, sizeof running_dir, root, "running") || !make_dir(running_dir)) return;
     recover();
+    prune_pending();
     memcpy(session.magic, "Hookshot running 1", 19);
     session.epoch = epoch_now(); session.monotonic_ms = monotonic_now();
     hos_crash_redact(session.version, sizeof session.version, version, length(version, 128));

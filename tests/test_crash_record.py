@@ -44,7 +44,9 @@ def source_contract():
         assert line in report, line
     fatal = block(threads, "void hos_fatal(")
     assert fatal.index("hos_crash_record_fatal(") < fatal.index("vsnprintf(")
-    assert "log_drain_raw();" in block(threads, "void hos_log_flush_crash(")
+    assert "hos_log_flush();" in report and "log_flush();" in fatal
+    writer = block((ROOT / "host/hos_crash_record.c").read_text(encoding="utf-8"), "int hos_crash_record_write(")
+    assert "hos_log(" not in writer and "hos_crash_record_log_notes(" not in writer
     renderer = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     replay = block(renderer, "[[noreturn]] void replay_fatal(")
     assert replay.index('logf("vk: FATAL:') < replay.index("std::_Exit(3)")
@@ -168,16 +170,21 @@ def main():
             count += 1
             return result
 
-        for mode in ("clean", "return", "control", "restart", "game-return", "denied"):
+        for mode in ("clean", "return", "control", "restart", "game-return", "denied", "device-mention"):
             folder = temp / mode; folder.mkdir()
             run(folder, mode)
             assert not records(folder) and not records(folder, "unclean")
             assert not list((folder / "bug-reports/running").glob("*.running"))
         print("PASS: clean return, explicit clean, control quit, restart, game return, denied storage")
+        if os.name != "nt":
+            folder = temp / "signal-metadata"; folder.mkdir()
+            run(folder, "signal-metadata")
+            assert not records(folder) and not records(folder, "unclean")
+            print("PASS: sent signals re-raised; real faults return to preserve original core siginfo")
 
-        for mode in ("fake", "partial", "privacy", "bounds", "fatal", "device-lost", "crash", "signal", "abort", "heap"):
+        for mode in ("fake", "partial", "privacy", "bounds", "fatal", "device-lost", "device-early", "crash", "signal", "abort", "heap"):
             folder = temp / mode; folder.mkdir()
-            result = run(folder, mode, 3 if mode in ("fatal", "device-lost") else None if mode in ("crash", "signal", "abort", "heap") else 0)
+            result = run(folder, mode, 3 if mode in ("fatal", "device-lost", "device-early") else None if mode in ("crash", "signal", "abort", "heap") else 0)
             paths = records(folder); assert len(paths) == 1, (mode, paths)
             text, values = checked_record(paths[0])
             assert "[hos host] run_id: " + values["run_id"] + "\n" in result.stderr
@@ -187,14 +194,18 @@ def main():
                 assert "guest_register:" not in text
             else:
                 assert "+0x" in text and "host_backtrace:" in text
-                if mode != "device-lost":
+                if mode not in ("device-lost", "device-early"):
                     assert "guest_register: x0=0x1000" in text and "guest_backtrace: 0x80005678" in text, (mode, text)
             if mode == "privacy":
                 assert values["thread"] == "redacted"
-            if mode == "device-lost":
+            if mode in ("device-lost", "device-early"):
                 assert values["reason"] == "device lost"
+                assert result.stderr.count("vk: FATAL:") == 2  # no writer recursion or duplicate record
             if mode == "signal" and os.name != "nt":
                 assert values["signal"] == str(signal.SIGSEGV)
+                assert int(values["signal_code"]) <= 0
+            if mode == "crash" and os.name != "nt":
+                assert values["signal_code"] == "1"  # SEGV_MAPERR: the authored 0x40 fault, not SI_TKILL
             run(folder, "clean")
             assert not records(folder, "unclean") and records(folder) == paths
         print("PASS: allocation-poisoned writer, bounds, short writes/EINTR, privacy, fatal/device-lost and real fatal children")
@@ -213,16 +224,55 @@ def main():
 
         folder = temp / "collision"; folder.mkdir()
         pending = folder / "bug-reports/pending"; pending.mkdir(parents=True)
-        now = datetime.now(timezone.utc)
-        reserved = []
-        for delta in range(-2, 31):
-            path = pending / ("crash-" + (now + timedelta(seconds=delta)).strftime("%Y%m%dT%H%M%SZ") + ".txt")
-            path.write_text("preserved\n", encoding="utf-8"); reserved.append(path)
-        run(folder, "fake")
+        reserved = [pending / "crash-19700101T000000Z.txt"]
+        reserved[0].write_text("preserved\n", encoding="utf-8")
+        run(folder, "collision")
         added = set(records(folder)) - set(reserved)
         assert len(added) == 1 and re.search(r"Z-\d+-\d+\.txt$", next(iter(added)).name)
         assert all(p.read_text(encoding="utf-8") == "preserved\n" for p in reserved)
         print("PASS: same-second publication cannot overwrite another record")
+
+        folder = temp / "retention"; folder.mkdir()
+        pending = folder / "bug-reports/pending"; pending.mkdir(parents=True)
+        owned = []
+        for index in range(40):
+            kind = "crash" if index % 2 else "unclean"
+            stamp = (datetime(2000, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=index)).strftime("%Y%m%dT%H%M%SZ")
+            path = pending / (kind + "-" + stamp + ".txt")
+            owned.append(path)
+        for path in reversed(owned):  # mtime/creation order is the opposite of the required UTC order
+            kind, stamp = path.stem.split("-", 1)
+            path.write_text("Hookshot " + kind + " record 1\nwhen: " + stamp + "\n", encoding="utf-8")
+        target = temp / "untouched-target.txt"; target.write_text("outside pending\n", encoding="utf-8")
+        link = pending / "crash-20990101T000000Z.txt"
+        prune_mode = "clean"
+        try:
+            link.symlink_to(target)
+        except OSError:
+            if os.name != "nt":
+                raise
+            link.write_text("authored reparse-point stand-in\n", encoding="utf-8")
+            prune_mode = "prune-reparse"
+            print("Windows symlink creation unavailable: actual reparse-attribute branch exercised with an authored stand-in")
+        directory = pending / "unclean-20990101T000001Z.txt"; directory.mkdir()
+        lookalikes = [pending / "stall-20000101T000000Z.txt", pending / "crash-20000101T000000Z.txt.bak",
+                      pending / "unclean-20000101T000000Z-12--3.txt"]
+        local_dump = folder / "bug-reports/local-only/authored.dmp"; local_dump.parent.mkdir()
+        completed = folder / "bug-reports/completed/report.txt"; completed.parent.mkdir()
+        for path in [*lookalikes, local_dump, completed]:
+            path.write_text("untouched\n", encoding="utf-8")
+        run(folder, prune_mode)
+        assert [p for p in owned if p.exists()] == owned[-15:]
+        assert link.exists() and directory.is_dir() and target.read_text(encoding="utf-8") == "outside pending\n"
+        assert all(p.read_text(encoding="utf-8") == "untouched\n" for p in [*lookalikes, local_dump, completed])
+        folder = temp / "prune-denied"; folder.mkdir()
+        pending = folder / "bug-reports/pending"; pending.mkdir(parents=True)
+        for index in range(16):
+            (pending / ("crash-20000101T0000%02dZ.txt" % index)).write_text("retained\n", encoding="utf-8")
+        denied = run(folder, "prune-denied")
+        assert len(records(folder)) == 16
+        assert denied.stderr.count("crash records: some old pending records could not be removed") == 1
+        print("PASS: newest15 of 40 retained; symlink/directory/stall/near-miss/local-only/completed files untouched; one deletion warning")
 
         folder = temp / "two-live"; folder.mkdir()
         children = []
@@ -260,6 +310,23 @@ def main():
                 child.kill(); child.wait(timeout=10)
         print("PASS: two live owners, real forced kill recovery, and stale marker with a live reused PID")
 
+        if os.name != "nt":
+            for signo in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                folder = temp / ("outside-" + str(signo)); folder.mkdir()
+                child = subprocess.Popen([str(exe), str(folder), "hold"], env=env, stdin=subprocess.PIPE,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    assert child.stdout.readline().strip() == "ready"
+                    child.send_signal(signo); assert child.wait(timeout=10) == -signo
+                finally:
+                    if child.poll() is None:
+                        child.kill(); child.wait(timeout=10)
+                run(folder, "clean")
+                _, values = checked_record(records(folder, "unclean")[0], "unclean")
+                assert values["termination_note"] == "ended from outside or lost power, not necessarily a crash"
+                assert not records(folder)
+            print("PASS: SIGTERM/SIGINT/SIGHUP remain explicitly unclean observations, not crashes")
+
         folder = temp / "old-log"; folder.mkdir()
         old_log = folder / "previous.log"
         with old_log.open("w+", encoding="utf-8") as log:
@@ -285,6 +352,10 @@ def main():
         print("PASS: unclean record keeps previous run id and bounded log facts, never private log text")
 
         if os.name == "nt":
+            folder = temp / "fatal-no-exception-dump"; folder.mkdir()
+            run(folder, "fatal", 3, {"HOS_CRASH_MINIDUMP": "1"})
+            _, values = checked_record(records(folder)[0])
+            assert values["dump"] == "off" and not list((folder / "bug-reports/local-only").glob("*.dmp"))
             folder = temp / "native-dump"; folder.mkdir()
             run(folder, "crash", None, {"HOS_CRASH_MINIDUMP": "1"})
             text, values = checked_record(records(folder)[0])

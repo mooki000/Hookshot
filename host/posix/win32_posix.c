@@ -1150,7 +1150,7 @@ static void on_signal(int sig, siginfo_t *si, void *uctx) {
         return;
     }
     signal(sig, SIG_DFL);
-    raise(sig);   /* externally sent fatal signals do not fault again after returning */
+    if (si->si_code <= 0) raise(sig);   /* sent signals cannot re-fault; real faults keep their original core siginfo */
 }
 static void install_signals(void) {
     static int done;

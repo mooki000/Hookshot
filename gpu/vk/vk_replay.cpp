@@ -1487,6 +1487,7 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
 /// replay's init command buffer that could not be ended: images already made and published lost their first layout
 /// change, and any later submission may use them
 [[noreturn]] void replay_fatal(const char* why) {
+    // The host's crash/freeze records read this prefix (host/hos_report_prefixes.h); keep it stable.
     logf("vk: FATAL: %s", why);
     if (host && host->log_flush) host->log_flush();
     std::fprintf(stderr, "vk: FATAL: %s\n", why);

@@ -139,6 +139,8 @@ The Linux host trace is a checked frame-pointer chain, and may stop early in
 optimized code; the existing log still attempts its longer glibc backtrace.
 Linux core-dump settings are neither requested nor changed. The record's pid and
 time can locate a core the system kept itself; no core is copied into a report.
+Real hardware faults re-fault with their original signal information, so their
+system core dumps are unchanged. Only externally sent signals are re-raised.
 
 Each process owns an OS-locked `bug-reports/running/<pid>.running` marker.
 At the next start, an unlocked marker without a completed crash record produces
@@ -148,13 +150,28 @@ forced termination, an out-of-memory kill, or a handler that could not run.
 Only file size/time and named trouble flags from the last log's tail are added,
 not arbitrary log text. Recovery runs before log rotation. Live markers are
 skipped, even when two games use one folder; process-id liveness is not the test.
+SIGTERM, SIGINT and SIGHUP are deliberately not crash signals here. Logout,
+Ctrl-C or a test timeout can therefore leave an unclean-end record. Its fixed
+note says: "ended from outside or lost power, not necessarily a crash".
 Normal returns, control quit, window close/restart and updater exits remove only
 their own marker and empty staging file, never earlier reports. A read-only
 folder disables recording without preventing play. Disk errors or an exhausted
 faulting stack can still prevent a record; this is not a crash-recovery facility.
 
+At startup, only the newest **15** crash/unclean text records are retained, by
+the UTC in their filenames (oldest first removed). A later crash can add one:
+at most 16 for sequential runs, or 17 with two games running together. Only
+regular files matching these exact names in `pending/` are pruned. Symlinks,
+directories, stall records, local-only dumps and completed menu reports are
+untouched. If removal fails, the extra file stays and one fixed warning follows
+the version/run-id banner. There is no pruning or cross-process wait in a crash.
+
 On Windows, `HOS_CRASH_MINIDUMP=1` additionally asks a startup-created worker for
 a dump in **`bug-reports/local-only/`**, after the text record is durable.
+Only an exception filter requests a dump; `hos_fatal` and renderer-fatal records
+remain text-only. The `vk: device lost:` prefix is captured before later driver
+queries, even if the terminal `vk: FATAL:` never arrives. The existing opt-in
+`RX_VK_FAULT_INFO` query before that prefix can still hang before capture.
 It is off by default, for a developer debugging their own build, and **must not
 be shared**: thread stacks can contain fragments of game data and private data.
 The text says `dump: off` or `dump: requested locally, not for sharing`; a request

@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
+#include "hos_report_prefixes.h"
 #include <windows.h>
 #ifndef _WIN32
 #include <signal.h>
@@ -20,7 +22,7 @@
 #endif
 
 static _Thread_local int poison_alloc;
-static int fail_storage, io_mode;
+static int fail_storage, io_mode, fail_prune;
 #ifndef _WIN32
 static int interruptions;
 #endif
@@ -29,6 +31,15 @@ void *fixture_calloc(size_t n, size_t size) { assert(!poison_alloc); return call
 void *fixture_realloc(void *p, size_t n) { assert(!poison_alloc); return realloc(p, n); }
 void fixture_free(void *p) { assert(!poison_alloc); free(p); }
 #ifdef _WIN32
+static int force_reparse;
+static DWORD WINAPI fixture_GetFileAttributesW(LPCWSTR path) {
+    if (force_reparse && wcsstr(path, L"crash-20990101T000000Z.txt")) return FILE_ATTRIBUTE_REPARSE_POINT;
+    return GetFileAttributesW(path);
+}
+static BOOL WINAPI fixture_DeleteFileW(LPCWSTR path) {
+    if (fail_prune && wcsstr(path, L"/pending/")) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    return DeleteFileW(path);
+}
 static HANDLE WINAPI fixture_CreateFileW(LPCWSTR path, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES security,
                                          DWORD disposition, DWORD flags, HANDLE template_file) {
     if (fail_storage) { SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE; }
@@ -41,6 +52,8 @@ static BOOL WINAPI fixture_WriteFile(HANDLE f, LPCVOID data, DWORD size, LPDWORD
 }
 #define CreateFileW fixture_CreateFileW
 #define WriteFile fixture_WriteFile
+#define GetFileAttributesW fixture_GetFileAttributesW
+#define DeleteFileW fixture_DeleteFileW
 #else
 static int fixture_open(const char *path, int flags, ...) {
     if (fail_storage) { errno = EACCES; return -1; }
@@ -56,8 +69,13 @@ static ssize_t fixture_write(int fd, const void *p, size_t n) {
     }
     return write(fd, p, n);
 }
+static int fixture_unlink(const char *path) {
+    if (fail_prune && strstr(path, "/pending/")) { errno = EACCES; return -1; }
+    return unlink(path);
+}
 #define open fixture_open
 #define write fixture_write
+#define unlink fixture_unlink
 #endif
 #define malloc fixture_malloc
 #define calloc fixture_calloc
@@ -71,12 +89,28 @@ static ssize_t fixture_write(int fd, const void *p, size_t n) {
 #ifdef _WIN32
 #undef CreateFileW
 #undef WriteFile
+#undef GetFileAttributesW
+#undef DeleteFileW
 #else
 #undef open
 #undef write
+#undef unlink
 #endif
 #ifndef _WIN32
+static int simulate_signal, reraises;
+typedef void (*SignalHandler)(int);
+static SignalHandler fixture_signal(int sig, SignalHandler action) {
+    return simulate_signal ? SIG_DFL : signal(sig, action);
+}
+static int fixture_raise(int sig) {
+    if (simulate_signal) { ++reraises; return 0; }
+    return raise(sig);
+}
+#define signal fixture_signal
+#define raise fixture_raise
 /* POSIX_ADAPTER */
+#undef signal
+#undef raise
 #endif
 
 typedef struct Ctx { uint64_t x[32]; } Ctx;
@@ -103,7 +137,7 @@ static int log_queue(const char *line) { (void)line; return 0; }
 volatile int hos_control_on;
 void hos_control_log(const char *line) { (void)line; }
 void hos_log_flush(void) {}
-void hos_log_flush_crash(void) {}
+static void log_flush(void) {}
 void hos_backtrace(void) {}
 void hos_hostcall_stats(void) {}
 /* HOS_LOG */
@@ -138,8 +172,14 @@ int main(int argc, char **argv) {
 #endif
     const char *mode = argv[2];
     if (!strcmp(mode, "denied")) fail_storage = 1;
+    if (!strcmp(mode, "prune-denied")) fail_prune = 1;
+#ifdef _WIN32
+    if (!strcmp(mode, "prune-reparse")) force_reparse = 1;
+#endif
     hos_crash_record_start(argv[1], "fixture-v1-g1234");
     fprintf(stderr, "[hos host] hookshot fixture-v1-g1234\n[hos host] run_id: %s\n", hos_report_run_id());
+    hos_crash_record_log_notes();
+    hos_crash_record_log_notes(); /* any deletion warning is emitted once only */
     if (fail_storage || !strcmp(mode, "read-only")) { assert(!ready); hos_crash_clean_end(); return 0; }
     assert(ready);
     for (unsigned i = 0; i < 32; ++i) guest_context.x[i] = 0x1000 + i;
@@ -147,14 +187,41 @@ int main(int argc, char **argv) {
     const uint64_t frames[] = {80, 0x80005678, 0, 0x80009abc};
     memcpy(guest_memory + 64, frames, sizeof frames);
     char stamp[17]; timestamp(0, stamp); assert(!strcmp(stamp, "19700101T000000Z"));
+    if (!strcmp(mode, "prune-denied") || !strcmp(mode, "prune-reparse")) { hos_crash_clean_end(); return 0; }
+#ifndef _WIN32
+    if (!strcmp(mode, "signal-metadata")) {
+        ucontext_t uc; assert(getcontext(&uc) == 0);
+        siginfo_t si; memset(&si, 0, sizeof si); si.si_addr = (void *)0x40;
+        simulate_signal = 1;
+        si.si_code = SEGV_MAPERR; on_signal(SIGSEGV, &si, &uc); assert(reraises == 0);
+        si.si_code = SI_USER; on_signal(SIGSEGV, &si, &uc); assert(reraises == 1);
+        si.si_code = SI_TKILL; on_signal(SIGSEGV, &si, &uc); assert(reraises == 2);
+        hos_crash_clean_end(); return 0;
+    }
+#endif
+    if (!strcmp(mode, "collision")) {
+        HosCrashContext c; authored_context(&c);
+        format_record(&record, &session, &c, 0, NULL);
+        assert(write_file(staging, record.bytes, record.n) && durable(staging));
+        close_file(staging); staging = NO_FILE;
+        assert(publish(staging_path, "crash", 0, session.pid));
+        hos_crash_clean_end(); return 0;
+    }
     if (!strcmp(mode, "clean")) { hos_crash_clean_end(); hos_crash_clean_end(); return 0; }
+    if (!strcmp(mode, "device-mention")) {
+        hos_log("%s", "a quoted vk: device lost: line is not a diagnostic entry");
+        hos_log("%s", "a quoted vk: FATAL: line is not a diagnostic entry");
+        hos_crash_clean_end(); return 0;
+    }
     if (!strcmp(mode, "return")) return 0;
     if (!strcmp(mode, "control")) { game_quit(); return 90; }
     if (!strcmp(mode, "restart")) { hos_window_closed_exit(); return 90; }
     if (!strcmp(mode, "game-return")) { game_thread(NULL); return 90; }
     if (!strcmp(mode, "fatal")) { hos_fatal(NULL, "private-user /home/private-user secret"); return 90; }
-    if (!strcmp(mode, "device-lost")) {
+    if (!strcmp(mode, "device-lost") || !strcmp(mode, "device-early")) {
+        if (!strcmp(mode, "device-early")) hos_log("%s", "vk: device lost: reading the checkpoints");
         hos_log("%s", "vk: FATAL: the GPU device was lost (VK_ERROR_DEVICE_LOST)");
+        hos_log("%s", "vk: FATAL: a second fatal line must not replace the first record");
         ExitProcess(3);
     }
     if (!strcmp(mode, "hold") || !strcmp(mode, "stale-live")) {
