@@ -966,6 +966,7 @@ std::string write(const Inputs& in) {
         entries.push_back({name, std::move(png)});
         return true;
     };
+    // (first: the frame on screen when the report was asked for)
     const bool picture = capture("picture.png");
     if (!picture) omit("picture.png", in.previous_run ? "not collected for the run that ended" : "no new frame or capture failed");
     // No pixel classifier is exposed by shot_ask. Always take a later frame, so
@@ -976,6 +977,8 @@ std::string write(const Inputs& in) {
     } else omit("picture-later.png", "first picture unavailable or shared capture deadline reached");
     omit("picture-menu.png", "existing request capture excludes the menu; no new readback path enabled");
 
+    // the logs: this run's, and the run before's (its own after a start from the icon, which moves the last one to .1)
+    // Pending incidents additionally match by run_id; their log is never guessed from a rotation number.
     const std::string g0 = in.game_dir + "hookshot_log.txt", g1 = in.game_dir + "hookshot_log.1.txt";
     const std::string before = in.previous_run || same_file(in.current_log, g0, in.windows) ? g1 : exists(g0) ? g0 : g1;
     const auto log_copy = [&](const std::string& source, const char* name, const char* purpose) {
@@ -1199,6 +1202,9 @@ std::string write(const Inputs& in) {
         }
     }
 
+    // (the link fills in the form's one-line answers and, while the whole link stays within kLinkMax, the options changed and
+    // the switches' names: never a switch's value, which report.txt and settings.txt hold. When they do not fit, the options
+    // and how many switches there are, else only the two counts; oversized one-line fields are omitted, not a too-long URL)
     std::string link = kForm;
     bool link_short = false;
     const auto query = [&](const char* key, const std::string& value) {
@@ -1224,6 +1230,7 @@ std::string write(const Inputs& in) {
     if (last.copied) logs += last_name + ": " + (in.previous_run ? "matched incident run, hookshot " : "the run before, hookshot ") + last.version + ".\n";
     if (!now.trouble.empty()) logs += now.trouble + "\n";
     if (!last.trouble.empty()) logs += last.trouble + "\n";
+    // (the first line answers the form's one-line field, as the link fills it in; the second says where it comes from)
     const std::string where = scene.map.empty() ? "Not known (no map in this run's log; terminal or no save loaded)." :
         scene.map + "\nLast logged, not a fresh state query. Add what you were doing there." +
         (!in.previous_run && !last.map.empty() ? " The run before was last in " + last.map + "." : "");

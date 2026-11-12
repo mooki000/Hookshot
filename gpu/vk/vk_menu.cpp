@@ -2877,7 +2877,11 @@ bool bug_report_picture(const char* path, uint64_t ticket) {
     return shot_ask_next(path, [](void* asked, int64_t, int ok) { bug_report::picture_written((uint64_t)(uintptr_t)asked, ok != 0); },
                          (void*)(uintptr_t)ticket) != 0;
 }
-/// Called under menu_mu at the report action; only existing, synchronized measurements.
+/// Called under menu_mu at the report action. FPS history has ring_mu, preparation has startup_mu, and the counters are
+/// independent atomic samples: this is not one atomic snapshot of all subsystems. dev.swap_extent, dev.swap_mode and dev.hdr
+/// are plain fields, not locked here. The windowed menu_tick call is inside present_image's present_image_mu, which also
+/// serializes runtime swapchain recreation (including present_commit/present_out). The other menu_tick call is headless and
+/// skips these swapchain reads. Keep that caller serialization; never call this snapshot from the report worker.
 void bug_report_snapshot(bug_report::Inputs& in) {
     fps_stats::Frame history[512];
     const int count = fps_recent(history, (int)std::size(history));

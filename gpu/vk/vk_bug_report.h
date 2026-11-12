@@ -1,6 +1,15 @@
-// One local, inspectable problem report. The menu snapshots what it already knows;
-// this worker gathers bounded diagnostics, redacts text and bundles an explicit file list.
-// No network requests, game memory reads or host/renderer interface additions.
+// The Insert menu's Bug report (vk_menu.cpp, the Gameplay tab): one press writes what an issue needs into a folder of its
+// own, bug-reports/<date>_<time> in the game folder, and nothing else. report.txt holds the answers the issue form asks for
+// (.github/ISSUE_TEMPLATE/1-game-problem.yml: the version, where the player is, the GPU and its driver, CPU, RAM and system,
+// the options and switches changed from their defaults) under the form's own headings, so scripts/hardware_report.py reads
+// them as it reads an issue; beside it this run's log and the last run's, the home folder and the user's name taken out of
+// their paths, and a picture of the game's frame without the menu (vk_replay.cpp's shot_ask takes it at its next present). Nothing is
+// sent anywhere: the player attaches the files to an issue. What is read and how it is written is here, apart from Vulkan
+// and the menu, for tests/test_bug_report.py.
+// Extended reports also list each attachment, omission and failure in report.txt and manifest.json, and package the
+// shareable files in report.zip. Explicitly requested local save copies stay separate and must never be shared.
+// The menu snapshots its existing state; a worker collects bounded diagnostics and redacts text. No sender or new
+// host/renderer interface is added, and the collector does not read game memory directly.
 #pragma once
 
 #include <cstdint>
