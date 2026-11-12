@@ -2,6 +2,10 @@
 steer it and read its state from a shell, a test or a coding agent. Standard library only.
 
     python -I scripts/hookshot_ctl.py [--sock S] [--json] COMMAND ...
+    --run DIR COMMAND ...                       re-attach using the run's manifest instead of a socket
+    runs [ROOT] / --run DIR show / finish       list runs, show one, mark an orphaned dead run finished
+    --run DIR stop [--timeout 10] [--terminate] quit, wait for its owner to reap it; force only when requested
+    --run DIR log [--lines 100|--since CURSOR] [--expect TEXT [--regex]]  bounded run log reads
 
     launch GAME_DIR [--data DIR] [--headless]   start the game with the bridge on; prints the socket's path
            [--save FOLDER [--slot NN]]          a copy of a save folder (one slot of it) as the run's saves
@@ -27,6 +31,8 @@ The socket defaults to $HOS_CONTROL. Plain lines by default, --json for the repl
 1 an error reply, 2 no game or bad usage, 3 a timeout.
 """
 import argparse
+import contextlib
+import math
 import json
 import os
 import re
@@ -36,8 +42,13 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
+from pathlib import Path
 
 WINDOWS = os.name == "nt"
+CLIENT_VERSION = "1"
+MANIFEST_VERSION = 1
+LOG_LIMIT = 1024 * 1024
 
 
 class Failed(Exception):
@@ -49,8 +60,9 @@ class Failed(Exception):
 class Bridge:
     """One connection: requests with ids, replies matched to them, events kept for watch"""
 
-    def __init__(self, path, timeout=10.0):
+    def __init__(self, path, timeout=10.0, session=None):
         self.path, self.next_id, self.pending = path, 0, b""
+        self.session = session
         try:
             if WINDOWS:
                 name = path if path.startswith("\\\\.\\pipe\\") else "\\\\.\\pipe\\" + path
@@ -124,10 +136,16 @@ class Bridge:
                 return None
             time.sleep(0.002)
 
-    def request(self, cmd, timeout=None, **args):
+    def request(self, cmd, timeout=None, reply_timeout=None, **args):
         """The reply to one request (events that come meanwhile are dropped). Without a timeout the bridge's own default
         holds (for an input: 30 s plus its frames at 10 fps, so a long one can take hours): the client then waits as
         long as the bridge can (an hour at most), unless the connection ends"""
+        session = getattr(self, "session", None)
+        if session:
+            args = session.prepare(cmd, args)
+        if cmd == "sequence" and args.get("units") == "hos" and "script" in args:
+            args["steps"] = hos_steps(args.pop("script"))
+            args.pop("units")
         self.next_id += 1
         rid = self.next_id
         req = {"id": rid, "cmd": cmd}
@@ -136,13 +154,16 @@ class Bridge:
             req["timeout"] = timeout
         self.send(req)
         wait = (timeout if timeout is not None else 3600 if cmd in ("press", "stick", "sequence") else 60) + 10
+        deadline = time.monotonic() + (wait if reply_timeout is None else reply_timeout)
         while True:
-            msg = self.line(wait)
+            msg = self.line(wait if reply_timeout is None else max(0, deadline - time.monotonic()))
             if msg is None:
                 if cmd == "quit":
                     return {"id": rid, "ok": True, "quitting": True}
                 raise Failed("the game closed the connection", 2)
             if msg.get("id") == rid and "ok" in msg:
+                if session and msg.get("ok"):
+                    session.record(cmd, msg)
                 return msg
 
 
@@ -220,6 +241,10 @@ def format_bytes(data, fmt):
 
 
 def connect(a, timeout=10.0):
+    if getattr(a, "run", None):
+        if a.sock:
+            raise Failed("--run and --sock are alternatives", 2)
+        return Session.attach(a.run).connect(timeout)
     path = a.sock or os.environ.get("HOS_CONTROL")
     if not path:
         raise Failed("no socket: give --sock PATH or set HOS_CONTROL (hookshot_ctl.py launch GAME_DIR starts a game "
@@ -244,6 +269,30 @@ def show(a, reply, plain):
 def run(a):
     if a.command == "launch":
         return launch(a)
+    if a.command == "_supervise":
+        return supervise(a.run)
+    if a.command == "runs":
+        show(a, list_runs(a.root), lambda rows: "\n".join("%s  %s" % (r["state"], r["run"]) for r in rows))
+        return 0
+    if a.command in ("show", "finish", "stop", "log"):
+        if not a.run:
+            raise Failed("%s needs --run DIR" % a.command, 2)
+        session = Session(a.run)
+        if a.command == "show":
+            result = session.info()
+        elif a.command == "finish":
+            result = session.finish()
+        elif a.command == "stop":
+            result = session.stop(a.timeout, terminate=a.terminate)
+        elif a.expect is not None:
+            if a.since is None:
+                raise Failed("log --expect needs --since CURSOR", 2)
+            result = session.expect_log(a.expect, a.since, a.timeout, regex=a.regex, limit=a.bytes)
+        else:
+            result = session.log(lines=a.lines, since=a.since, limit=a.bytes)
+        show(a, result, lambda r: "\n".join(plain_text(s) for s in r["text"].split("\n")) if "text" in r
+             else json.dumps(r, indent=2))
+        return 3 if a.command == "stop" and not result.get("process_exited") else 0
     if a.command == "mem":
         a.addr = addr_of(a.addr)
         if a.action == "read":
@@ -267,7 +316,7 @@ def run(a):
                 " (%s%s)" % (plain_text(g.get("age", "?")), ", " + flags if flags else "") if g else "",
                 plain_text(r.get("version", ""))))
         elif a.command in ("press", "stick", "sequence"):
-            args = {"exclusive": True if a.exclusive else None, "wait": False if a.no_wait else None}
+            args = {"exclusive": a.exclusive, "wait": False if a.no_wait else None}
             if a.command == "press":
                 args.update(buttons=a.buttons, frames=a.frames, at=a.at)
             elif a.command == "stick":
@@ -435,7 +484,7 @@ def plain_tree(path):
                 raise Failed("--save: %s is a link or not a plain file: refused" % n, 2)
 
 
-def copy_save(src, data, slot=None):
+def copy_save(src, data=None, slot=None, user=None):
     """A save folder (account.sav, option.sav, slot_NN/) copied to where the game reads it in the data folder; with slot,
     that slot alone (so Continue loads it). The source is only read, and holds plain files and folders only (no links).
     Returns the destination"""
@@ -453,7 +502,13 @@ def copy_save(src, data, slot=None):
         slot = slot_name(slot)
         if slot not in slots:
             raise Failed("--save: %s has no %s (it has %s)" % (src, slot, ", ".join(slots)), 2)
-    dest = os.path.join(os.path.abspath(data), "hookshot", "save", SAVE_USER)
+    dest = os.path.join(os.path.abspath(user or os.path.join(data, "hookshot")), "save", SAVE_USER)
+    try:
+        overlap = os.path.commonpath([src, dest]) in (src, dest)
+    except ValueError:   # (different Windows drives cannot overlap)
+        overlap = False
+    if os.path.normcase(os.path.realpath(dest)) != os.path.normcase(dest) or overlap:
+        raise Failed("--save: source and destination must be separate plain folders", 2)
     if os.path.exists(dest) and os.listdir(dest):
         raise Failed("--save: %s already holds saves: give an empty --data (or none: the run folder's own)" % dest, 2)
     os.makedirs(dest, exist_ok=True)
@@ -478,75 +533,518 @@ def game_exe(game, exe=None):
     return os.path.join(game, name)
 
 
-def launch(a):
-    """The game in GAME_DIR with HOS_CONTROL set, its socket in a run folder of its own; waits until it answers"""
-    game = os.path.abspath(a.game_dir)
-    exe = game_exe(game, a.exe)
-    if not os.path.isfile(exe):
-        raise Failed("no game at %s" % exe, 2)
-    run_dir = os.path.abspath(a.run) if a.run else tempfile.mkdtemp(prefix="hookshot-control-",
-                                                                     dir=os.environ.get("XDG_RUNTIME_DIR") or None)
-    os.makedirs(run_dir, mode=0o700, exist_ok=True)
-    sock = a.sock or ("hookshot-control-%d" % os.getpid() if WINDOWS else os.path.join(run_dir, "control.sock"))
-    if not WINDOWS:
-        sock = os.path.abspath(sock)   # (the game runs in its own folder: a relative path would be bound there)
-    env = dict(os.environ, HOS_CONTROL=sock)
-    if a.slot and not a.save:
-        raise Failed("--slot goes with --save", 2)
-    data = a.data or (os.path.join(run_dir, "data") if a.save else None)
-    if a.save:
+def hos_steps(script):
+    """HOS seconds/ms to game presents at 60 Hz: nearest frame, halves up; a positive hold is at least one frame"""
+    steps = []
+    for text in script.split(","):
+        if not text.strip():
+            continue
+        match = re.fullmatch(r"\s*([0-9.+eE-]+):([^/,]+)(?:/([0-9.+eE-]+))?\s*", text)
+        if not match:
+            raise Failed("sequence: expected seconds:buttons[/milliseconds]", 2)
+        try:
+            at, held = float(match[1]), float(match[3] or 200)
+        except ValueError:
+            raise Failed("sequence: invalid seconds or milliseconds", 2)
+        if not math.isfinite(at) or not math.isfinite(held) or at < 0 or held <= 0 or at > 3600 or held > 3600000:
+            raise Failed("sequence: time outside 0..3600 seconds or hold outside 0..3600000 ms", 2)
+        steps.append({"at": math.floor(at * 60 + 0.5), "frames": max(1, math.floor(held * 60 / 1000 + 0.5)),
+                      "buttons": match[2].strip()})
+    if not 1 <= len(steps) <= 256:
+        raise Failed("sequence: 1..256 steps", 2)
+    return steps
+
+
+def utc_now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def process_start(pid):
+    """A live process's birth identity, not just its reusable pid; None for a dead process (including a Linux zombie)"""
+    if not pid:
+        return None
+    if WINDOWS:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = wintypes.HANDLE
+        k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        k.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        h = k.OpenProcess(0x100000 | 0x1000, False, pid)   # (SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION)
+        if not h:
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if k.WaitForSingleObject(h, 0) != 258 or not k.GetProcessTimes(h, *[ctypes.byref(t) for t in times]):
+                return None
+            return {"clock": "windows-filetime", "ticks": (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime}
+        finally:
+            k.CloseHandle(h)
+    try:
+        fields = Path("/proc/%d/stat" % pid).read_text().rsplit(")", 1)[1].split()
+        if fields[0] in ("Z", "X"):
+            return None
+        return {"clock": "linux-start-ticks", "ticks": int(fields[19]),
+                "boot": Path("/proc/sys/kernel/random/boot_id").read_text().strip()}
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def same_process(pid, birth):
+    return birth is not None and process_start(pid) == birth
+
+
+def write_json(path, value):
+    tmp = Path(str(path) + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with tmp.open("x", encoding="utf-8") as f:
+            json.dump(value, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def run_lock(folder):
+    """Only a manifest update holds this lock; never a bridge request or a process wait"""
+    with (Path(folder) / "manifest.lock").open("r+b") as f:
         if WINDOWS:
-            raise Failed("--save: Linux only (on Windows the game keeps its saves in its own folder)", 2)
-        copy_save(a.save, data, a.slot)
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            f.seek(0)
+            if WINDOWS:
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def runs_root():
+    return Path.cwd() / "work" / "control-runs"
+
+
+def list_runs(root=None):
+    root = Path(root) if root else runs_root()
+    return [Session(p.parent).info() for p in sorted(root.glob("*/manifest.json"))]
+
+
+class Session:
+    """A durable run created by this client; a surviving supervisor, not an attaching caller, owns its process"""
+
+    def __init__(self, folder):
+        self.folder = Path(folder).resolve()
+        self.manifest = self.folder / "manifest.json"
+
+    def info(self):
+        with run_lock(self.folder):
+            return self._read()
+
+    def _read(self):
+        with self.manifest.open(encoding="utf-8") as f:
+            value = json.load(f)
+        if value.get("schema_version") != MANIFEST_VERSION:
+            raise Failed("unsupported run manifest version", 2)
+        return value
+
+    def update(self, **fields):
+        with run_lock(self.folder):
+            value = self._read()
+            value.update(fields)
+            write_json(self.manifest, value)
+        return value
+
+    @classmethod
+    def attach(cls, folder):
+        session = cls(folder)
+        session.require_live()
+        return session
+
+    def require_live(self):
+        info = self.info()
+        if not same_process(info["pid"], info["process_start"]):
+            raise Failed("run's game is gone or its pid was reused: %s" % self.folder, 2)
+        return info
+
+    def connect(self, timeout=10):
+        return Bridge(self.require_live()["socket"], timeout, session=self)
+
+    def prepare(self, cmd, args):
+        args = dict(args)
+        if cmd in ("press", "stick", "sequence") and args.get("exclusive") is None:
+            if self.info()["profile"] == "test":
+                args["exclusive"] = True
+        if cmd == "shot" and not args.get("path"):
+            args["path"] = str(self.folder / "shots" / ("shot-" + uuid.uuid4().hex + ".png"))
+        return args
+
+    def record(self, cmd, reply):
+        if cmd != "shot":
+            return
+        # (Only metadata from the reply: an untrusted game must not make the client open an arbitrary file)
+        artifact = {k: reply.get(k) for k in ("path", "frame", "present", "width", "height")}
+        artifact["kind"] = "shot"
+        with run_lock(self.folder):
+            value = self._read()
+            value["artifacts"].append(artifact)
+            write_json(self.manifest, value)
+
+    def request(self, cmd, timeout=None, **args):
+        b = self.connect()
+        try:
+            return check(b.request(cmd, timeout=timeout, **args))
+        finally:
+            b.close()
+
+    def finish(self):
+        """Mark an orphaned, dead run; only its supervisor can know an exit code"""
+        with run_lock(self.folder):
+            info = self._read()
+            if same_process(info["pid"], info["process_start"]) or same_process(**info["owner"]):
+                raise Failed("run still has a live game or owner; use stop", 2)
+            if info["state"] not in ("finished", "failed"):
+                info.update(state="finished", ended_at=utc_now(), stop_method="observed-exit", save_drain="unknown",
+                            process_exited=True)
+                write_json(self.manifest, info)
+        return info
+
+    def stop(self, timeout=10, terminate=False):
+        """Ask the original supervisor to quit and reap its child; never signal a pid read from a manifest"""
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise Failed("stop timeout must be positive seconds", 2)
+        with run_lock(self.folder):
+            info = self._read()
+            if info["state"] in ("finished", "failed"):
+                return info
+            if not same_process(**info["owner"]):
+                raise Failed("the run's owner is gone; an attached client will not kill its game", 2)
+            if not same_process(info["pid"], info["process_start"]):
+                raise Failed("run's game is gone or its pid was reused", 2)
+            if info.get("stop_request"):
+                raise Failed("a stop is already being waited for", 2)
+            request = {"id": uuid.uuid4().hex, "timeout": timeout, "terminate": terminate,
+                       "pid": info["pid"], "process_start": info["process_start"]}
+            info["stop_request"] = request
+            write_json(self.manifest, info)
+        deadline = time.monotonic() + timeout + 15
+        while True:
+            info = self.info()
+            if info["state"] in ("finished", "failed"):
+                return info
+            result = info.get("stop_result", {})
+            if result.get("id") == request["id"] and not result["process_exited"]:
+                return info
+            if not same_process(**info["owner"]):
+                raise Failed("run owner ended without an exit receipt; inspect the run and use finish", 2)
+            if time.monotonic() >= deadline:
+                raise Failed("no stop receipt yet: %s (the run remains owned)" % self.folder, 3)
+            time.sleep(0.05)
+
+    def log(self, lines=100, since=None, limit=65536):
+        """A byte cursor into this run's append-only UTF-8 log; every read and returned text is bounded"""
+        if not 1 <= limit <= LOG_LIMIT or not 0 <= lines <= 10000 or (since is not None and since < 0):
+            raise Failed("log: bytes 1..1048576, lines 0..10000, cursor >= 0", 2)
+        with open(self.info()["log"], "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            if since is not None and since > size:
+                raise Failed("log cursor is past the end (the file was truncated?)", 2)
+            start = max(0, size - limit) if since is None else since
+            f.seek(start)
+            data = f.read(min(limit, size - start))
+        cursor = start + len(data)
+        if since is None:
+            if start:
+                data = data.partition(b"\n")[2]   # (do not call a clipped first line a whole one)
+            data = b"".join(data.splitlines(keepends=True)[-lines:]) if lines else b""
+        return {"text": data.decode("utf-8", "replace"), "cursor": cursor, "start": start,
+                "more": cursor < size, "truncated": start > 0 if since is None else False}
+
+    def expect_log(self, text, since, timeout=10, regex=False, limit=65536):
+        if not text or len(text) > 4096 or not math.isfinite(timeout) or timeout <= 0:
+            raise Failed("log expect: a pattern of 1..4096 characters and a positive timeout", 2)
+        try:
+            pattern = re.compile(text) if regex else None
+        except re.error as e:
+            raise Failed("log regex: %s" % e, 2)
+        deadline, cursor, pending = time.monotonic() + timeout, since, ""
+        while True:
+            part = self.log(since=cursor, limit=limit)
+            pending += part["text"]
+            if (pattern.search(pending) if pattern else text in pending):
+                return dict(part, text=pending[-limit:], matched=True)
+            pending = pending[-limit:]
+            cursor = part["cursor"]
+            if time.monotonic() >= deadline:
+                raise Failed("log expect timed out after cursor %d: %s" % (since, text), 3)
+            if not part["more"]:
+                time.sleep(0.05)
+
+
+def ready_status(reply, level):
+    if not reply.get("ok"):
+        return False
+    if level == "bridge":
+        return True
+    if reply.get("frame", 0) < 1:
+        return False
+    if level == "present":
+        return True
+    game = reply.get("game") or {}
+    return reply.get("state") == "play" and not reply.get("stalled", True) and game.get("event") is False \
+        and game.get("loading") is False
+
+
+def wait_ready(session, level, timeout, process):
+    deadline, last = time.monotonic() + timeout, "no status reply"
+    while time.monotonic() < deadline:
+        if (session.folder / "cancel").exists():
+            raise Failed("launch cancelled while waiting for readiness", 3)
+        if process.poll() is not None:
+            raise Failed("game exited %d before ready=%s" % (process.returncode, level), 2)
+        b = None
+        try:
+            left = max(0.001, min(1, deadline - time.monotonic()))
+            b = Bridge(session.info()["socket"], left)
+            reply = b.request("status", reply_timeout=left)
+            if ready_status(reply, level):
+                return reply
+            last = "state=%s frame=%s game=%s" % (reply.get("state"), reply.get("frame"), reply.get("game"))
+        except Failed as e:
+            last = str(e)
+        finally:
+            if b:
+                b.close()
+        time.sleep(0.05)
+    raise Failed("ready=%s timed out: %s; see %s" % (level, last, session.info()["log"]), 3)
+
+
+def stop_child(process, info, timeout, terminate):
+    deadline, method, error = time.monotonic() + timeout, "quit", None
+    b = None
+    try:
+        b = Bridge(info["socket"], min(timeout, 1))
+        check(b.request("quit", reply_timeout=max(0.001, deadline - time.monotonic())))
+    except (Failed, OSError) as e:
+        error = str(e)
+    finally:
+        if b:
+            b.close()
+    try:
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        if not terminate:
+            return {"method": "quit-timeout", "process_exited": False, "forced": False,
+                    "save_drain": "unsupported", "error": error}
+        method = terminate_child(process)
+    return {"method": method, "process_exited": True, "forced": method != "quit", "exit_code": process.returncode,
+            "save_drain": "unsupported", "error": error}
+
+
+def terminate_child(process):
+    # (Only a Popen child held by its original owner, never os.kill(manifest["pid"]))
+    if process.poll() is not None:
+        return "already-exited"
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+        return "terminate"
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        return "kill"
+
+
+def supervise(folder):
+    session, process = Session(folder), None
+    info = session.update(owner={"pid": os.getpid(), "birth": process_start(os.getpid())}, state="starting")
+    method, error, code = "exit", None, 0
+    try:
+        if (session.folder / "cancel").exists():
+            raise Failed("launch cancelled before admission", 3)
+        with open(info["log"], "ab", buffering=0) as out:
+            process = subprocess.Popen(info["command"], cwd=info["cwd"], env=dict(os.environ, **info["environment"]),
+                                       stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+        birth = process_start(process.pid)
+        info = session.update(pid=process.pid, process_start=birth, started_at=utc_now())
+        reply = wait_ready(session, info["ready"], info["ready_timeout"], process)
+        session.update(state="running", ready_reply=reply)
+        while process.poll() is None:
+            info = session.info()
+            request = info.get("stop_request")
+            if request:
+                if request["pid"] != process.pid or request["process_start"] != birth:
+                    result = {"method": "refused", "process_exited": False, "error": "process identity changed"}
+                else:
+                    session.update(state="stopping")
+                    result = stop_child(process, info, request["timeout"], request["terminate"])
+                method = result["method"]
+                session.update(stop_result=dict(result, id=request["id"]), stop_request=None,
+                               state="stopping" if result["process_exited"] else "running")
+            if (session.folder / "cancel").exists():
+                method = "cancel-" + terminate_child(process)
+            time.sleep(0.05)
+    except BaseException as e:
+        error, code = str(e), e.code if isinstance(e, Failed) else 2
+        if process is not None:
+            method = "startup-" + terminate_child(process)
+    finally:
+        session.update(state="failed" if error else "finished", error=error, error_code=code, ended_at=utc_now(),
+                       exit_code=process.wait() if process is not None else None, stop_method=method,
+                       process_exited=True, save_drain="unsupported")
+    return code
+
+
+def start_session(game_dir, *, run=None, root=None, exe=None, image=None, romfs=None, user=None, cwd=None, data=None,
+                  save=None, slot=None, profile="default", headless=False, sock=None, env=None, ready="bridge",
+                  timeout=600, wrapper=None):
+    """Start a durable supervisor, optionally through an admission wrapper (argv, never a shell command)"""
+    game = os.path.abspath(game_dir)
+    executable = game_exe(game, exe)
+    if not os.path.isfile(executable):
+        raise Failed("no game at %s" % executable, 2)
+    if slot and not save:
+        raise Failed("--slot goes with --save", 2)
+    if profile not in ("default", "test") or ready not in ("bridge", "present", "play"):
+        raise Failed("unknown profile or ready level", 2)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise Failed("launch timeout must be positive seconds", 2)
+    if profile == "test" and (user or data):
+        raise Failed("test profile owns its user folder; use --save for a copy, not --user or --data", 2)
+    if cwd and not image:
+        raise Failed("--cwd needs --image (otherwise the game changes back to its image folder)", 2)
+    if WINDOWS and save and not user and profile != "test":
+        raise Failed("--save on Windows needs --user or --profile test", 2)
+    changes = dict(env or {})
+    if any(not k or "=" in k or "\0" in k + v for k, v in changes.items()):
+        raise Failed("--env NAME=VALUE", 2)
+    if wrapper is not None and (not isinstance(wrapper, list) or not all(isinstance(s, str) and s for s in wrapper)):
+        raise Failed("wrapper must be a JSON array of command arguments", 2)
+    if run:
+        folder = Path(run).absolute()
+        if folder.is_symlink() or (folder.exists() and (not folder.is_dir() or any(folder.iterdir()))):
+            raise Failed("run folder must be new or empty: %s" % folder, 2)
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        folder = folder.resolve()
+    else:
+        parent = Path(root) if root else runs_root()
+        parent.mkdir(parents=True, exist_ok=True)
+        folder = Path(tempfile.mkdtemp(prefix="run-", dir=parent)).resolve()
+    if not WINDOWS:
+        folder.chmod(0o700)
+    with (folder / "manifest.lock").open("xb") as lock:
+        lock.write(b"\0")
+    (folder / "shots").mkdir()
+    log = folder / "log.txt"
+    log.touch()
+    user = os.path.abspath(user) if user else str(folder / "user") if profile == "test" else None
+    data = os.path.abspath(data) if data else str(folder / "data") if save and not user else None
+    if save:
+        copy_save(save, data, slot, user=user)
+    if user:
+        Path(user).mkdir(parents=True, exist_ok=True)
     if data:
-        env["XDG_DATA_HOME"] = os.path.abspath(data)
-    if a.headless:
-        env["HOS_HEADLESS"] = "1"
+        changes.setdefault("XDG_DATA_HOME", data)
+    if headless:
+        changes.setdefault("HOS_HEADLESS", "1")
+    socket_dir = None
+    if not sock:
+        if WINDOWS:
+            sock = "hookshot-control-" + uuid.uuid4().hex
+        else:
+            runtime = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+            if len(os.fsencode(runtime)) > 48:
+                runtime = "/tmp"
+            socket_dir = tempfile.mkdtemp(prefix="hctl-", dir=runtime)
+            sock = os.path.join(socket_dir, "control.sock")
+    if not WINDOWS:
+        sock = os.path.abspath(sock)
+    # (Keep the default profile's explicit --env precedence; record the effective endpoint too)
+    changes.setdefault("HOS_CONTROL", sock)
+    sock = changes["HOS_CONTROL"]
+    if profile == "test":
+        empty = folder / "empty-env.txt"
+        empty.touch()
+        changes.update(HOS_HEADLESS="1", HOS_AUDIO="0", HOS_ENV_FILE=str(empty))
+    command = [executable]
+    if image:
+        command.append(os.path.abspath(image))
+    for flag, value in (("romfs", romfs), ("user", user)):
+        if value:
+            command.extend(["--" + flag, os.path.abspath(value)])
+    working = os.path.abspath(cwd) if cwd else game
+    user_path = user or (os.path.join(working, "user") if WINDOWS or image else
+                        os.path.join(changes.get("XDG_DATA_HOME", os.environ.get("XDG_DATA_HOME") or
+                                                os.path.expanduser("~/.local/share")), "hookshot"))
+    session = Session(folder)
+    info = {"schema_version": MANIFEST_VERSION, "client_version": CLIENT_VERSION, "run": str(folder),
+            "game": game, "executable": executable, "command": command, "cwd": working, "environment": changes,
+            "profile": profile, "user": user_path, "save_source": os.path.abspath(save) if save else None, "slot": slot,
+            "socket": sock, "socket_dir": socket_dir, "log": str(log), "pid": None, "process_start": None,
+            "owner": {"pid": None, "birth": None}, "created_at": utc_now(), "started_at": None, "ended_at": None,
+            "state": "queued", "exit_code": None, "stop_method": None, "save_drain": "unsupported",
+            "process_exited": False, "artifacts": [], "ready": ready, "ready_timeout": timeout, "wrapper": wrapper or []}
+    write_json(session.manifest, info)
+    command = (wrapper or []) + [sys.executable, "-I", "-B", str(Path(__file__).resolve()),
+                                 "--run", str(folder), "_supervise"]
+    flags = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS} if WINDOWS \
+        else {"start_new_session": True}
+    with (folder / "owner.log").open("ab") as out:
+        owner = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **flags)
+    import threading
+    threading.Thread(target=owner.wait, daemon=True).start()   # (reap it if this caller outlives the supervisor)
+    try:
+        while True:
+            info = session.info()
+            if info["state"] == "running":
+                return session
+            if info["state"] == "failed":
+                raise Failed(info["error"], info["error_code"])
+            if owner.poll() is not None:
+                error = "launch owner exited %s; see %s" % (owner.returncode, folder / "owner.log")
+                session.update(state="failed", error=error, error_code=2, process_exited=info["pid"] is None,
+                               ended_at=utc_now())
+                raise Failed(error, 2)
+            time.sleep(0.05)
+    except BaseException:
+        (folder / "cancel").touch()   # (also checked after a queued admission: no game may start later)
+        raise
+
+
+def launch(a):
+    changes = {}
     for kv in a.env:
         if "=" not in kv:
             raise Failed("--env NAME=VALUE", 2)
         k, v = kv.split("=", 1)
-        env[k] = v
-    log = os.path.join(run_dir, "log.txt")
-    with open(log, "wb") as out:
-        kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
-        cmd = [exe]
-        if a.image:
-            cmd.append(os.path.abspath(a.image))
-        for flag in ("romfs", "user"):
-            if getattr(a, flag):
-                cmd.extend(["--" + flag, os.path.abspath(getattr(a, flag))])
-        p = subprocess.Popen(cmd, cwd=game, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **kw)
-    deadline = time.monotonic() + a.timeout
-    while True:
-        if p.poll() is not None:
-            raise Failed("the game ended (%d) before its bridge answered: %s" % (p.returncode, log), 2)
-        try:
-            b = Bridge(sock, 5)
-            r = b.request("status")
-            b.close()
-            if r.get("ok"):
-                break
-        except Failed:
-            pass
-        if time.monotonic() > deadline:
-            raise Failed("the game's bridge did not answer in %.0f s: %s" % (a.timeout, log), 3)
-        time.sleep(0.2)
-    info = {"socket": sock, "pid": p.pid, "run": run_dir, "log": log}
-    print(json.dumps(info) if a.json else sock)
+        changes[k] = v
+    session = start_session(a.game_dir, run=a.run, root=a.root, exe=a.exe, image=a.image, romfs=a.romfs, user=a.user,
+                            cwd=a.cwd, data=a.data, save=a.save, slot=a.slot, profile=a.profile, headless=a.headless,
+                            sock=a.sock, env=changes, ready=a.ready, timeout=a.timeout,
+                            wrapper=json.loads(a.wrapper) if a.wrapper else None)
+    info = session.info()
+    print(json.dumps(info) if a.json else info["socket"])
     return 0
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--sock", help="the bridge's socket (default $HOS_CONTROL)")
+    p.add_argument("--run", help="an existing run folder to re-attach to")
     p.add_argument("--json", action="store_true", help="the replies as JSON lines")
     sub = p.add_subparsers(dest="command", required=True)
 
     def inputs(q):
         q.add_argument("--frames", type=int, default=8)
         q.add_argument("--at", type=int, default=0, help="frames from the next controller read")
-        q.add_argument("--exclusive", action="store_true", help="the player's own devices left out meanwhile")
+        q.add_argument("--exclusive", action=argparse.BooleanOptionalAction, default=None,
+                       help="the player's own devices left out meanwhile (default for test runs)")
         q.add_argument("--no-wait", action="store_true", help="reply as soon as it is queued")
         q.add_argument("--timeout", type=float)
 
@@ -560,7 +1058,12 @@ def main(argv=None):
     q.add_argument("--save", help="a save folder (<data>/hookshot/save/<user id>) copied in first (Linux); the source is "
                                   "only read")
     q.add_argument("--slot", help="with --save: that slot alone (03 or slot_03), so Continue loads it")
-    q.add_argument("--run", help="the run folder (socket, log, shots); default a new one")
+    q.add_argument("--run", default=argparse.SUPPRESS, help="a new or empty run folder")
+    q.add_argument("--root", help="parent for unique run folders (default work/control-runs)")
+    q.add_argument("--profile", choices=["default", "test"], default="default")
+    q.add_argument("--ready", choices=["bridge", "present", "play"], default="bridge")
+    q.add_argument("--cwd", help="working/cache folder; needs --image")
+    q.add_argument("--wrapper", help="JSON argv prefix around the lifetime supervisor, for admission")
     q.add_argument("--headless", action="store_true")
     q.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
     q.add_argument("--timeout", type=float, default=600, help="seconds to wait for the bridge (shaders may be prepared first)")
@@ -576,7 +1079,7 @@ def main(argv=None):
     q = sub.add_parser("sequence")
     q.add_argument("script", help="<at>:<buttons>[/<frames>],...")
     q.add_argument("--hos", action="store_true", help="times in seconds and holds in ms, as HOS_INPUT_SCRIPT")
-    q.add_argument("--exclusive", action="store_true")
+    q.add_argument("--exclusive", action=argparse.BooleanOptionalAction, default=None)
     q.add_argument("--no-wait", action="store_true")
     q.add_argument("--timeout", type=float)
     q = sub.add_parser("release", help="let go of this client's queued inputs and those of clients gone")
@@ -625,6 +1128,21 @@ def main(argv=None):
     sub.add_parser("quit")
     q = sub.add_parser("raw")
     q.add_argument("request", help="a JSON request object")
+    q = sub.add_parser("runs", help="list run manifests under a root")
+    q.add_argument("root", nargs="?")
+    sub.add_parser("show", help="show --run's manifest")
+    sub.add_parser("finish", help="mark an orphaned dead run finished (exit code unknown)")
+    q = sub.add_parser("stop", help="ask --run's owner to quit and wait; never kill an externally attached process")
+    q.add_argument("--timeout", type=float, default=10)
+    q.add_argument("--terminate", action="store_true", help="allow the original owner to terminate, then kill, its child")
+    q = sub.add_parser("log", help="read --run's log without a bridge command")
+    q.add_argument("--lines", type=int, default=100)
+    q.add_argument("--since", type=int, help="byte cursor returned by the previous read")
+    q.add_argument("--bytes", type=int, default=65536, help="read/output bound, at most 1048576")
+    q.add_argument("--expect", help="wait for text after --since")
+    q.add_argument("--regex", action="store_true")
+    q.add_argument("--timeout", type=float, default=10)
+    sub.add_parser("_supervise", help=argparse.SUPPRESS)
     a = p.parse_args(argv)
     try:
         return run(a)
@@ -636,6 +1154,9 @@ def main(argv=None):
         return 2
     except json.JSONDecodeError as e:
         print("hookshot_ctl: not JSON: %s" % e, file=sys.stderr)
+        return 2
+    except OSError as e:
+        print("hookshot_ctl: %s" % e, file=sys.stderr)
         return 2
 
 

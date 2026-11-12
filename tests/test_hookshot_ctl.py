@@ -1,7 +1,7 @@
 """scripts/hookshot_ctl.py, the control bridge's client, against a tiny fake game: a Python stand-in for the executable
 that serves the bridge's protocol on $HOS_CONTROL (docs/control.md) and writes down each request. The commands' requests
 and plain output, --json, exit codes (an error reply, a timeout, no game), watch, launch (which starts the stand-in as a
-game folder's hookshot and waits for its socket), and the mem commands. Linux only: a Unix socket.
+game folder's hookshot and waits for its socket), and the mem commands. Linux sockets and Windows named pipes.
 
 python -I -B tests/test_hookshot_ctl.py
 """
@@ -26,10 +26,31 @@ def client_module():
     return m
 
 FAKE = r'''
-import json, os, socket, sys, threading, time
+import json, os, socket, struct, sys, threading, time, zlib
 path = os.environ["HOS_CONTROL"]
 log = open(os.environ["FAKE_LOG"], "a", buffering=1)
-log.write(json.dumps({"cmd": "_start", "control": path, "xdg": os.environ.get("XDG_DATA_HOME")}) + "\n")
+log.write(json.dumps({"cmd": "_start", "control": path, "xdg": os.environ.get("XDG_DATA_HOME"),
+                      "argv": sys.argv[1:], "cwd": os.getcwd(), "headless": os.environ.get("HOS_HEADLESS"),
+                      "audio": os.environ.get("HOS_AUDIO"), "env_file": os.environ.get("HOS_ENV_FILE")}) + "\n")
+print("fake: started", flush=True)
+started = time.monotonic()
+options = {"text_speed": 3, "fps_counter": 0}
+
+
+def png(path):
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 2, 0, 0, 0))
+    data += chunk(b"IDAT", zlib.compress(b"\0\xff\0\0\0\xff\0")) + chunk(b"IEND", b"")
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "wb") as out:
+        out.write(data)
+
+if os.environ.get("FAKE_EXIT"):
+    sys.exit(int(os.environ["FAKE_EXIT"]))
+if os.environ.get("FAKE_NO_BRIDGE"):
+    time.sleep(120)
+    sys.exit(0)
 frame = [100]
 if os.name == "nt":   # a named pipe, through ctypes: one synchronous handle a connection, read then write, never both at once
     import ctypes
@@ -95,6 +116,12 @@ def serve(f):
         if cmd == "status":
             r.update(protocol=1, fps=59.9, state="play", draws=2400.0, window={"width": 1280, "height": 720}, version="fake",
                      map="KokiriForest_Child")
+            if os.environ.get("FAKE_SESSION"):
+                age = time.monotonic() - started
+                present = age >= float(os.environ.get("FAKE_PRESENT_AFTER", "0"))
+                quiet = age >= float(os.environ.get("FAKE_PLAY_AFTER", "0"))
+                r.update(frame=frame[0] if present else 0, stalled=False, state="play" if present else "boot",
+                         game={"event": not quiet, "loading": not quiet, "age": "child"})
         elif cmd == "teleport":
             if req.get("to") is None:
                 r.update(destinations=[{"index": 0, "child": "KokiriForest_Child", "adult": "KokiriForest_Adult"},
@@ -115,9 +142,14 @@ def serve(f):
                 if r["sent"]:
                     r.update(map="KokiriForest_Adult", accepted=True)
         elif cmd in ("press", "stick", "sequence"):
-            r.update(start=frame[0], end=frame[0] + req.get("frames", 8))
+            steps = req.get("steps") or [{"at": req.get("at", 0), "frames": req.get("frames", 8)}]
+            r.update(start=frame[0] + min(s.get("at", 0) for s in steps),
+                     end=frame[0] + max(s.get("at", 0) + s.get("frames", 8) for s in steps))
+            print("fake: input %s completed" % cmd, flush=True)
         elif cmd == "shot":
-            r.update(present=frame[0] + 1, path=req.get("path") or "/run/shots/shot_0001.png")
+            dest = req.get("path") or os.path.join(os.path.dirname(os.environ["FAKE_LOG"]), "shots", "shot.png")
+            png(dest)
+            r.update(present=frame[0] + 1, path=dest, width=2, height=1)
         elif cmd == "wait":
             if req.get("event") == "loading_end" and req.get("timeout", 60) <= 1:
                 r = {"id": rid, "ok": False, "frame": frame[0], "error": "timeout", "message": "not met in time"}
@@ -129,9 +161,13 @@ def serve(f):
             if req["name"] == "nope":
                 r = {"id": rid, "ok": False, "frame": frame[0], "error": "not_found", "message": "no setting nope"}
             else:
-                r.update(was=0, option={"key": req["name"], "value": req["value"], "text": "On"})
+                before = options.get(req["name"], 0)
+                options[req["name"]] = req["value"]
+                r.update(was=before, option={"key": req["name"], "value": req["value"], "text": "On"})
         elif cmd == "option_get":
-            r.update(options=[{"key": "text_speed", "value": 3, "text": "Instant"}, {"key": "fps_counter", "value": 0, "text": "Off"}])
+            rows = [{"key": k, "value": v, "text": "Instant" if k == "text_speed" else "On" if v else "Off"}
+                    for k, v in options.items()]
+            r.update(option=next(o for o in rows if o["key"] == req["name"])) if req.get("name") else r.update(options=rows)
         elif cmd == "mem_read":
             data = bytes(range(req["size"]))
             r.update(format=req.get("format", "hex"), addr=req["addr"], size=req["size"], data=data.hex())
@@ -144,7 +180,9 @@ def serve(f):
             continue
         elif cmd == "quit":
             f.write((json.dumps(dict(r, quitting=True)) + "\n").encode())
-            f.flush_and_exit()
+            if not os.environ.get("FAKE_REFUSE_QUIT"):
+                f.flush_and_exit()
+            continue
         elif cmd == "release":
             r.update(released=2)
         elif cmd == "saves":
@@ -193,6 +231,244 @@ class GamePaths(unittest.TestCase):
             (game / "bin" / name).unlink()
             self.assertEqual(m.game_exe(tmp), str(game / "bin" / name))
             self.assertEqual(m.game_exe(tmp, str(game / "custom")), str(game / "custom"))
+
+
+class Sessions(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="ctl-session-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.fake = self.root / "fake.py"
+        self.fake.write_text(FAKE, encoding="utf-8")
+        self.m = client_module()
+        self.sessions = []
+        self.addCleanup(self.stop_sessions)
+
+    def stop_sessions(self):
+        for session in self.sessions:
+            if session.info()["state"] not in ("finished", "failed"):
+                session.stop(timeout=0.2, terminate=True)
+            deadline = time.monotonic() + 5
+            while self.m.same_process(**session.info()["owner"]) and time.monotonic() < deadline:
+                time.sleep(0.02)
+
+    def start(self, **kwargs):
+        env = dict(FAKE_LOG=str(self.root / "requests.jsonl"), FAKE_SESSION="1")
+        env.update(kwargs.pop("env", {}))
+        session = self.m.start_session(str(self.root), root=str(self.root / "runs"), exe=sys.executable,
+                                       image=str(self.fake), timeout=5, env=env, **kwargs)
+        self.sessions.append(session)
+        return session
+
+    def requests(self, command):
+        return [r for r in map(json.loads, (self.root / "requests.jsonl").read_text().splitlines()) if r["cmd"] == command]
+
+    def test_profile_manifest_and_second_client(self):
+        os.environ["CTL_INHERITED_SECRET"] = "not recorded"
+        self.addCleanup(os.environ.pop, "CTL_INHERITED_SECRET", None)
+        session = self.start(profile="test", ready="play",
+                             env={"HOS_HEADLESS": "0", "HOS_AUDIO": "1", "HOS_ENV_FILE": "ambient.txt"})
+        info = session.info()
+        self.assertEqual((info["schema_version"], info["client_version"], info["state"]), (1, "1", "running"))
+        self.assertEqual((info["game"], info["executable"]), (str(self.root), sys.executable))
+        self.assertTrue(self.m.same_process(info["pid"], info["process_start"]))
+        self.assertEqual((info["environment"]["HOS_HEADLESS"], info["environment"]["HOS_AUDIO"]), ("1", "0"))
+        self.assertNotIn("CTL_INHERITED_SECRET", info["environment"])
+        self.assertEqual(Path(info["environment"]["HOS_ENV_FILE"]).read_bytes(), b"")
+        self.assertEqual(info["user"], str(session.folder / "user"))
+        self.assertEqual(self.requests("_start")[-1]["argv"], ["--user", info["user"]])
+        attached = self.m.Session.attach(session.folder)
+        self.assertEqual(attached.request("status")["state"], "play")
+        attached.request("press", buttons="A", frames=3)
+        self.assertIs(self.requests("press")[-1]["exclusive"], True)
+        ctl("--run", str(session.folder), "stick", "L", "0", "1", "--frames", "60", "--no-exclusive", check=0)
+        self.assertIs(self.requests("stick")[-1]["exclusive"], False)
+        listed = json.loads(ctl("--json", "runs", str(self.root / "runs"), check=0).stdout)
+        self.assertEqual([r["run"] for r in listed], [str(session.folder)])
+        shown = json.loads(ctl("--json", "--run", str(session.folder), "show", check=0).stdout)
+        self.assertEqual(shown["pid"], info["pid"])
+        with self.assertRaisesRegex(self.m.Failed, "still has a live"):
+            attached.finish()
+        stopped = attached.stop()
+        self.assertEqual((stopped["state"], stopped["exit_code"], stopped["stop_method"]), ("finished", 0, "quit"))
+        self.assertEqual(stopped["save_drain"], "unsupported")
+        self.assertTrue(stopped["process_exited"])
+        self.assertFalse(self.m.same_process(info["pid"], info["process_start"]))
+
+    def test_default_profile_and_unique_folders(self):
+        first, second = self.start(), self.start()
+        self.assertNotEqual(first.folder, second.folder)
+        info = first.info()
+        self.assertEqual(info["profile"], "default")
+        for name in ("HOS_HEADLESS", "HOS_AUDIO", "HOS_ENV_FILE"):
+            self.assertNotIn(name, info["environment"])
+        first.request("press", buttons="B", frames=8, at=12)
+        req = self.requests("press")[-1]
+        self.assertEqual((req["frames"], req["at"]), (8, 12))
+        self.assertNotIn("exclusive", req)
+
+    def test_copied_save_and_explicit_paths(self):
+        source = self.root / "source"
+        (source / "slot_03").mkdir(parents=True)
+        (source / "account.sav").write_bytes(b"authored account")
+        (source / "slot_03" / "progress.sav").write_bytes(b"authored progress")
+        before = [(p.relative_to(source), p.read_bytes(), p.stat().st_mtime_ns) for p in source.rglob("*") if p.is_file()]
+        romfs = self.root / "romfs"
+        romfs.mkdir()
+        session = self.start(profile="test", save=str(source), slot="03", romfs=str(romfs), cwd=str(self.root))
+        info = session.info()
+        copied = Path(info["user"]) / "save" / self.m.SAVE_USER
+        self.assertEqual((copied / "slot_03" / "progress.sav").read_bytes(), b"authored progress")
+        self.assertEqual(info["save_source"], str(source))
+        self.assertEqual(info["command"], [sys.executable, str(self.fake), "--romfs", str(romfs), "--user", info["user"]])
+        after = [(p.relative_to(source), p.read_bytes(), p.stat().st_mtime_ns) for p in source.rglob("*") if p.is_file()]
+        self.assertEqual(before, after)
+        if not WINDOWS:
+            (source / "bad").symlink_to(source / "account.sav")
+            with self.assertRaisesRegex(self.m.Failed, "link or not a plain file"):
+                self.start(profile="test", save=str(source))
+        with self.assertRaisesRegex(self.m.Failed, "owns its user folder"):
+            self.start(profile="test", user=str(source))
+        explicit = self.start(user=str(self.root / "explicit-user"))
+        self.assertEqual(explicit.info()["user"], str(self.root / "explicit-user"))
+
+    def test_ready_levels_and_cleanup(self):
+        for level, values in (("bridge", {"FAKE_PRESENT_AFTER": "99", "FAKE_PLAY_AFTER": "99"}),
+                              ("present", {"FAKE_PRESENT_AFTER": "0.15", "FAKE_PLAY_AFTER": "99"}),
+                              ("play", {"FAKE_PRESENT_AFTER": "0.1", "FAKE_PLAY_AFTER": "0.3"})):
+            with self.subTest(level=level):
+                session = self.start(ready=level, env=values)
+                reply = session.info()["ready_reply"]
+                self.assertTrue(self.m.ready_status(reply, level))
+                if level != "play":
+                    self.assertFalse(self.m.ready_status(reply, "play"))
+                session.stop()
+        for name, values, expected in (("timeout", {"FAKE_NO_BRIDGE": "1"}, "timed out"),
+                                       ("play-timeout", {"FAKE_PLAY_AFTER": "99"}, "timed out"),
+                                       ("exit", {"FAKE_EXIT": "7"}, "exited 7")):
+            with self.subTest(name=name):
+                run = self.root / name
+                env = dict(FAKE_LOG=str(self.root / "requests.jsonl"), FAKE_SESSION="1", **values)
+                with self.assertRaisesRegex(self.m.Failed, expected):
+                    self.m.start_session(str(self.root), run=str(run), exe=sys.executable, image=str(self.fake),
+                                         ready="play", timeout=0.3, env=env)
+                info = self.m.Session(run).info()
+                self.assertEqual(info["state"], "failed")
+                self.assertIsNotNone(info["exit_code"])
+                self.assertFalse(self.m.same_process(info["pid"], info["process_start"]))
+
+    def test_stop_timeout_force_and_external_owner(self):
+        session = self.start(env={"FAKE_REFUSE_QUIT": "1"})
+        info = session.info()
+        timed = session.stop(timeout=0.1)
+        self.assertEqual(timed["state"], "running")
+        self.assertEqual(timed["stop_result"]["method"], "quit-timeout")
+        self.assertFalse(timed["stop_result"]["process_exited"])
+        self.assertTrue(self.m.same_process(info["pid"], info["process_start"]))
+        owner = timed["owner"]
+        session.update(owner={"pid": os.getpid(), "birth": {"wrong": "identity"}})
+        with self.assertRaisesRegex(self.m.Failed, "attached client will not kill"):
+            self.m.Session.attach(session.folder).stop(timeout=0.1, terminate=True)
+        self.assertTrue(self.m.same_process(info["pid"], info["process_start"]))
+        session.update(owner=owner, process_start={"wrong": "identity"})
+        with self.assertRaisesRegex(self.m.Failed, "pid was reused"):
+            self.m.Session.attach(session.folder)
+        session.update(process_start=info["process_start"])
+        result = json.loads(ctl("--json", "--run", str(session.folder), "stop", "--timeout", "0.1", "--terminate", check=0).stdout)
+        self.assertEqual(result["state"], "finished")
+        self.assertIn(result["stop_method"], ("terminate", "kill"))
+        self.assertNotEqual(result["exit_code"], 0)
+        self.assertEqual(result["save_drain"], "unsupported")
+
+    def test_log_cursor_expect_and_bounds(self):
+        import threading
+        session = self.start()
+        cursor = session.log(lines=0)["cursor"]
+        self.assertGreater(cursor, 0)
+        session.request("press", buttons="A", frames=2)
+        self.assertIn("input press", session.expect_log("input press", cursor, timeout=1)["text"])
+        cursor = session.log(lines=0)["cursor"]
+        with self.assertRaisesRegex(self.m.Failed, "timed out"):
+            session.expect_log("input press", cursor, timeout=0.05)
+        timer = threading.Timer(0.05, lambda: session.request("stick", stick="R", x=1, y=0, frames=4))
+        timer.start()
+        try:
+            got = session.expect_log(r"input st.ck completed", cursor, timeout=2, regex=True)
+            self.assertTrue(got["matched"])
+        finally:
+            timer.join()
+        path = Path(session.info()["log"])
+        with path.open("ab") as f:
+            f.write(b"line\n" * 100)
+        part = session.log(lines=2, limit=100)
+        self.assertEqual(part["text"], "line\nline\n")
+        self.assertTrue(part["truncated"])
+        part = session.log(since=0, limit=20)
+        self.assertEqual(part["cursor"], 20)
+        self.assertTrue(part["more"])
+        for kwargs in ({"limit": 0}, {"lines": -1}, {"since": -1}, {"since": path.stat().st_size + 1}):
+            with self.assertRaises(self.m.Failed):
+                session.log(**kwargs)
+        text = ctl("--run", str(session.folder), "--json", "log", "--lines", "2", check=0)
+        self.assertEqual(json.loads(text.stdout)["text"], "line\nline\n")
+        ctl("--run", str(session.folder), "log", "--expect", "line", check=2)
+        ctl("--run", str(session.folder), "log", "--since", str(cursor), "--expect", "line", check=0)
+
+    def test_shot_is_decodable_and_recorded(self):
+        import struct
+        import zlib
+        session = self.start()
+        reply = session.request("shot")
+        data = Path(reply["path"]).read_bytes()
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        offset, image = 8, b""
+        while offset < len(data):
+            size = struct.unpack_from(">I", data, offset)[0]
+            kind, body = data[offset + 4:offset + 8], data[offset + 8:offset + 8 + size]
+            crc = struct.unpack_from(">I", data, offset + 8 + size)[0]
+            self.assertEqual(crc, zlib.crc32(kind + body) & 0xffffffff)
+            if kind == b"IHDR":
+                self.assertEqual(struct.unpack(">IIBBBBB", body), (2, 1, 8, 2, 0, 0, 0))
+            if kind == b"IDAT":
+                image += body
+            offset += size + 12
+        self.assertEqual(zlib.decompress(image), b"\0\xff\0\0\0\xff\0")
+        artifact = session.info()["artifacts"][0]
+        self.assertEqual((artifact["path"], artifact["frame"], artifact["width"], artifact["height"]),
+                         (reply["path"], reply["frame"], 2, 1))
+        session.request("option_set", name="text_speed", value=1)
+        self.assertEqual(session.request("option_get", name="text_speed")["option"]["value"], 1)
+        self.assertEqual(session.stop()["artifacts"], [artifact])
+
+    def test_frame_units_received_by_fake(self):
+        session = self.start()
+        session.request("press", buttons="A", at=7, frames=3)
+        session.request("stick", stick="L", x=0, y=1, at=9, frames=45)
+        ctl("--run", str(session.folder), "sequence", "0.025:A/25,1:B/1,2:LUP/2000", "--hos", check=0)
+        self.assertEqual((self.requests("press")[-1]["at"], self.requests("press")[-1]["frames"]), (7, 3))
+        self.assertEqual((self.requests("stick")[-1]["at"], self.requests("stick")[-1]["frames"]), (9, 45))
+        self.assertEqual(self.requests("sequence")[-1]["steps"],
+                         [{"at": 2, "frames": 2, "buttons": "A"}, {"at": 60, "frames": 1, "buttons": "B"},
+                          {"at": 120, "frames": 120, "buttons": "LUP"}])
+
+    def test_run_collision_finish_and_wrapper(self):
+        wrapper = self.root / "wrapper.py"
+        receipt = self.root / "wrapper-receipt"
+        wrapper.write_text("import pathlib, subprocess, sys\n"
+                           "code = subprocess.call(sys.argv[2:])\n"
+                           "pathlib.Path(sys.argv[1]).write_text(str(code))\n", encoding="utf-8")
+        session = self.start(wrapper=[sys.executable, "-I", str(wrapper), str(receipt)])
+        self.assertFalse(receipt.exists())   # (admission lasts as long as the game, not just the launch reply)
+        with self.assertRaisesRegex(self.m.Failed, "new or empty"):
+            self.start(run=str(session.folder))
+        session.stop()
+        deadline = time.monotonic() + 5
+        while not receipt.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(receipt.read_text(), "0")
+        session.update(state="running", exit_code=None, stop_method=None)
+        info = session.finish()
+        self.assertEqual((info["state"], info["exit_code"], info["stop_method"]), ("finished", None, "observed-exit"))
 
 
 class HookshotCtl(unittest.TestCase):
@@ -253,7 +529,8 @@ class HookshotCtl(unittest.TestCase):
 
     @unittest.skipIf(WINDOWS, "launch starts a game folder's hookshot.exe")
     def test_launch(self):
-        self.assertEqual(self.sock, os.path.join(self.run_dir, "control.sock"))
+        self.assertLess(len(os.fsencode(self.sock)), 108)
+        self.assertEqual(os.stat(os.path.dirname(self.sock)).st_mode & 0o777, 0o700)
         self.assertEqual(os.stat(self.run_dir).st_mode & 0o777, 0o700)
         self.assertTrue(os.path.isfile(self.info["log"]))
 
@@ -275,7 +552,8 @@ class HookshotCtl(unittest.TestCase):
         self.assertEqual(self.last("sequence")["script"], "0:A/8,60:A/8")
         self.assertNotIn("units", self.last("sequence"))
         ctl("sequence", "0:LUP/2000,2:A", "--hos", env=self.env, check=0)
-        self.assertEqual(self.last("sequence")["units"], "hos")
+        self.assertEqual(self.last("sequence")["steps"], [{"at": 0, "frames": 120, "buttons": "LUP"},
+                                                        {"at": 120, "frames": 12, "buttons": "A"}])
         self.assertEqual(ctl("release", env=self.env, check=0).stdout.strip(), "released 2")
         self.assertNotIn("all", self.last("release"))
         self.assertEqual(ctl("release", "--all", env=self.env, check=0).stdout.strip(), "released 2 (every client's)")
@@ -309,8 +587,9 @@ class HookshotCtl(unittest.TestCase):
         self.assertEqual(waits, [3610, 70, 15])
 
     def test_shot(self):
-        r = ctl("shot", "out.png", env=self.env, check=0)
-        self.assertEqual(r.stdout.strip(), os.path.abspath("out.png"))   # (the client's folder, made absolute)
+        path = os.path.join(self.dir, "out.png")
+        r = ctl("shot", path, env=self.env, check=0)
+        self.assertEqual(r.stdout.strip(), os.path.abspath(path))   # (the client's folder, made absolute)
         ctl("shot", "--after", "500", env=self.env, check=0)
         self.assertNotIn("path", self.last("shot"))
         self.assertEqual(self.last("shot")["after"], 500)
