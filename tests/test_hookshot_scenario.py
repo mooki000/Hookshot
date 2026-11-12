@@ -75,9 +75,11 @@ class Scenarios(unittest.TestCase):
             {"wait": {"frames": 2}}, {"wait": {"state": "play"}}, {"wait": {"map": "AuthoredMap"}},
             {"wait": {"ms": 10}}, {"screenshot": {"path": "capture.png"}},
             {"expect_log": {"pattern": "(the control bridge)", "timeout_ms": 1000}},
+            {"settings": {}},
             {"settings": {"name": "text_speed"}}, {"set_setting": {"name": "text_speed", "value": 2}},
             {"settings": {"name": "text_speed"}}, {"teleport": {"to": 1, "arrive_ms": 1000}},
             {"age": {"to": "child"}}, {"cheat": {"name": "age", "to": "adult"}},
+            {"cheat": {"name": "teleport", "value": 1}},
             {"set_setting": {"name": "text_speed", "value": 3}},
         ])
         events = []
@@ -161,7 +163,8 @@ class Scenarios(unittest.TestCase):
         bad_steps = [{"press": {"buttons": ["A"]}, "wait": {"ms": 1}}, {"stick": {"x": 2}},
                      {"wait": {"ms": 1, "frames": 1}}, {"press": None}, {"sequence": {"steps": []}},
                      {"screenshot": {"path": "../outside.png"}}, {"expect_log": {"pattern": "x", "since": "now"}},
-                     {"set_setting": {"name": "text_speed"}}, {"press": {"buttons": ["A"], "hold_ms": -1}}]
+                     {"set_setting": {"name": "text_speed"}}, {"press": {"buttons": ["A"], "hold_ms": -1}},
+                     {"cheat": {"name": "age", "value": {}}}, {"expect_log": {"pattern": "[", "regex": True}}]
         for i, bad in enumerate(bad_steps):
             with self.subTest(step=bad):
                 proc = run(self.folder, self.scenario([{"wait": {"ms": 0}}, bad]), self.folder / ("bad-%d" % i))
@@ -214,7 +217,7 @@ class NativeFrames(unittest.TestCase):
             exe = folder / ("fixture.exe" if os.name == "nt" else "fixture")
             libs = ["-ladvapi32"] if os.name == "nt" else ["-lpthread", "-lm"]
             command = [COMPILER, "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
-                       "-Wno-format-truncation", "-D_GNU_SOURCE", "-DHOS_CONTROL_NO_GAME",
+                       "-Wno-format-truncation", "-D_GNU_SOURCE", "-D_CRT_SECURE_NO_WARNINGS", "-DHOS_CONTROL_NO_GAME",
                        str(ROOT / "tests" / "scenario_control_test.c"), str(ROOT / "host" / "control.c"), "-o", str(exe)] + libs
             subprocess.run(command, check=True)
             receipt = folder / "frames.csv"

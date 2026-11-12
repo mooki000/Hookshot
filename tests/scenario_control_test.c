@@ -1,6 +1,5 @@
 /* The scenario runner's input goes through the real bridge, then its controller-read hook. Reuse the existing fake
    game and frame recorder, not a second timing parser; the receipt written at quit is what the game actually read. */
-#define _CRT_SECURE_NO_WARNINGS
 #define main control_fixture_main
 #include "control_test.c"
 #undef main
