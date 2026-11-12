@@ -372,7 +372,9 @@ def describe(t, me=None):
 
 
 def public(t):
-    return {k: v for k, v in t.items() if k != "history"}
+    result = {k: v for k, v in t.items() if k != "history"}
+    result["current_results"] = current_results(t)
+    return result
 
 
 def find(tests, tid):
@@ -464,7 +466,9 @@ def cmd_claim(args, config):
         return refuse("%s is closed" % t["id"])
     results = current_results(t)
     if me in results and not args.again:
-        return refuse("you already tested %s (%s); --again to test it again" % (t["id"], results[me]["result"]))
+        return refuse("you already tested the current request %s (%s); a moved PR head does not change its pin. "
+                      "Wait for the card to be updated to a new commit, or --again to repeat this test deliberately"
+                      % (t["id"], results[me]["result"]))
     commit = t.get("claim_commits", {}).get(me) if me in t["claims"] else None
     text = "%s %s claim: %s" % (MARK, t["id"], until_line())
     if t["pr"]:

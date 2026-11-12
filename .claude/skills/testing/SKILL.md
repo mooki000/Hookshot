@@ -30,9 +30,10 @@ testing with no result yet, then ones that have results (oldest first within eac
 maintainer (`"approved": false`: not by a collaborator and not labelled `testing wanted`), which can't be claimed:
 skip them. `list` checks approval and head together; `claim` checks again. Go down it and take the **first
 one this PC fits** (its needs: a request for "AMD RX 6000 or newer" is not for an RX 580 or an NVIDIA card; no needs
-means any PC). Skip the ones you are testing or already reported on (`claims` and `results` in the JSON name the
-testers), unless the PR changed since your result. If none fit, say so and stop. Show the user the pick (ID, summary,
-PR, needs, notes, who else is on it) and let them confirm, unless they told you to pick on your own.
+means any PC). Skip the ones you are testing or already reported on (`claims` and `current_results` in the JSON name
+the testers). `results` also contains older results: do not use it to skip a card updated to a new commit. A moved PR
+head alone does not change the requested pin. If none fit, say so and stop. Show the user the pick (ID, summary, PR,
+needs, notes, who else is on it) and let them confirm, unless they told you to pick on your own.
 
 ## 3. Claim it
 
@@ -41,7 +42,8 @@ python -I scripts/test_requests.py claim T-XXXX
 ```
 
 - Others may be testing it too (the script says who); that's fine, each result counts. A refusal (exit code 3) means
-  the request is closed, or you already reported on it (`--again` only if the PR changed since).
+  the request is closed, or you already reported on its current pin (`--again` deliberately repeats the same test;
+  a card updated to a new commit needs no `--again`).
 - Build the card's commit printed by `claim`, not a newer PR head. If it says the head moved, ask the requester
   to confirm which commit is wanted; the pin does not change automatically.
 - A claim lasts 90 minutes and then simply clears. **Keep it alive while you work:** run

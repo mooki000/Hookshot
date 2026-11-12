@@ -528,6 +528,37 @@ def test_github_head():
                   "rate-limit handling does not retry")
 
 
+def test_json_current_results():
+    events = []
+    tid = request(events)
+    run(events, "bob", "claim", tid)
+    run(events, "bob", "done", tid, "--result", "pass", "--comment", COMMENT)
+    for command in (("list", "--json"), ("show", tid, "--json")):
+        code, _, out = run(events, "bob", *command)
+        card = json.loads(out)
+        card = card[0] if isinstance(card, list) else card
+        check(code == 0 and card.get("current_results") == card["results"] and BOB in card["results"],
+              "JSON exposes current results before an update")
+    GITHUB[2711] = dict(fake_pr_info(2711), head=NEXT)
+    try:
+        code, sent, _ = run(events, "bob", "claim", tid)
+        check(code == 3 and not sent and "card to be updated to a new commit" in STDERR,
+              "a moved PR head alone does not invalidate a current result")
+        run(events, "ann", "update", tid, "--commit", NEXT)
+        for command in (("list", "--json"), ("show", tid, "--json")):
+            code, _, out = run(events, "bob", *command)
+            card = json.loads(out)
+            card = card[0] if isinstance(card, list) else card
+            check(code == 0 and card.get("current_results") == {} and BOB in card["results"],
+                  "JSON keeps historical results but exposes an empty current view after update")
+        code, _, _ = run(events, "bob", "claim", tid)
+        check(code == 0, "a result for the old pin does not block the updated card")
+    finally:
+        GITHUB.clear()
+    legacy = state([ev("bob", 1, "%s T-7KQ2 done pass: %s" % (T, COMMENT))], 2)
+    check(tr.public(legacy).get("current_results") == legacy["results"], "legacy JSON keeps all results current")
+
+
 def test_old_client():
     old = load(args.old_source, "old_test_requests")
     events = []
@@ -560,7 +591,8 @@ def test_old_client():
 
 tests = (test_parse, test_request, test_claims, test_done_cancel, test_order, test_commands, test_approval,
          test_request_head, test_moved_head, test_done_commit, test_explicit_commit, test_update_commit,
-         test_old_card, test_list_calls, test_done_unreachable, test_request_unreachable, test_github_head)
+         test_old_card, test_list_calls, test_done_unreachable, test_request_unreachable, test_github_head,
+         test_json_current_results)
 if args.old_source:
     tests += (test_old_client,)
 if args.test:

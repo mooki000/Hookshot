@@ -58,8 +58,10 @@ python -I scripts/test_requests.py update T-XXXX --commit <new-sha>
 
 - Several people can test one request. `claims` lists who is testing it now (a claim clears by itself when its
   tester stops renewing it); `results` has each tester's result (pass, fail or mixed), the `commit` they built when
-  recorded, and `comment`, the link to their comment on the PR. Compare that commit with the card and current head;
-  an old or unrecorded commit is not evidence for a new one. Read it:
+  recorded, and `comment`, the link to their comment on the PR. `current_results` contains only the results for the
+  card's current pin (all results on a legacy unpinned card). Use that view to decide who has already tested it; an
+  older entry in `results` must not stop a tester taking a card updated to a new commit. A moved PR head alone does
+  not update the card. Read each result:
   `gh api repos/NotRexed/Hookshot/issues/comments/<number after #issuecomment->` (a review:
   `gh api repos/NotRexed/Hookshot/pulls/<pr>/reviews/<number>`), or `gh pr view <pr> --comments`.
 - Report it to the user in a few lines: who tested, which commit, on what, the result, the numbers or the failure.

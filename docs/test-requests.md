@@ -175,6 +175,8 @@ Use `update --commit <sha>` when a fix needs another test, rather than replacing
 can update an open card. Existing claims keep the commit they started with. Earlier results and their links stay
 in the record, labelled when they do not match the new request; they no longer satisfy the new commit or require
 `claim --again`. No room history is deleted. This also lets the requester add a pin to an old card.
+`list --json` and `show --json` expose `current_results` for this decision; `results` retains each tester's latest
+result even when it belongs to an older commit. On an unpinned legacy card both views contain the same results.
 
 The room's format is additive: `Commit: <sha>` and `Head: <sha>` follow all the existing request, claim or done
 lines. The first line and the comment URL stay unchanged. Old clients treat the new request lines as notes, ignore
@@ -184,7 +186,8 @@ testing. The separate relay needs the same support before it can display or act 
 ## If something goes wrong
 
 - `not signed in` or `no longer valid`: run `python -I scripts/team_chat.py login` again.
-- `refused: you already tested ...`: pick another, or `claim --again` if the PR changed since.
+- `refused: you already tested ...`: wait for the card to be updated to a new commit, or use `claim --again` to repeat
+  the same pin deliberately. A moved PR head alone is not an updated request.
 - `cannot reach`: the server is down; try later.
 - The messages in the room are one line each, led by the ID and the action (`🧪 T-7KQ2 claim: until 2026-11-12
   16:40Z`); people can type them in Element too. Commit fields and updates need a current client and relay.
