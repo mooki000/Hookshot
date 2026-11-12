@@ -1,7 +1,7 @@
 """Optional real-Vulkan offscreen presentation regression, without game data.
 
-Needs a Vulkan 1.3 device, loader and headers. The normal CI runner skips GPU
-checks; selecting this check explicitly runs it. No window/swapchain is created.
+Needs a Vulkan 1.3 device, loader and headers. The source suite skips it; CI's
+separate lavapipe job and explicit selections run it. No window/swapchain is created.
 """
 import argparse
 import os
