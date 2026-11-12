@@ -150,6 +150,8 @@ def serve(f):
             dest = req.get("path") or os.path.join(os.path.dirname(os.environ["FAKE_LOG"]), "shots", "shot.png")
             png(dest)
             r.update(present=frame[0] + 1, path=dest, width=2, height=1)
+            # (gpu/vk/vk_replay.cpp, shot publication: exact success-line format)
+            print("vk: present %d written to %s (the control bridge)" % (r["present"], dest), flush=True)
         elif cmd == "wait":
             if req.get("event") == "loading_end" and req.get("timeout", 60) <= 1:
                 r = {"id": rid, "ok": False, "frame": frame[0], "error": "timeout", "message": "not met in time"}
@@ -179,6 +181,7 @@ def serve(f):
                 f.write((json.dumps({"event": "present", "sub": rid, "frame": frame[0] + i, "fps": 60.0, "state": "play"}) + "\n").encode())
             continue
         elif cmd == "quit":
+            print("control: quit asked by a client", flush=True)   # (host/control.c, cmd_quit)
             f.write((json.dumps(dict(r, quitting=True)) + "\n").encode())
             if not os.environ.get("FAKE_REFUSE_QUIT"):
                 f.flush_and_exit()
@@ -418,7 +421,10 @@ class Sessions(unittest.TestCase):
         import struct
         import zlib
         session = self.start()
+        cursor = session.log(lines=0)["cursor"]
         reply = session.request("shot")
+        line = "vk: present %d written to %s (the control bridge)" % (reply["present"], reply["path"])
+        self.assertTrue(session.expect_log(line, cursor, timeout=1)["matched"])
         data = Path(reply["path"]).read_bytes()
         self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
         offset, image = 8, b""
@@ -452,23 +458,121 @@ class Sessions(unittest.TestCase):
                           {"at": 120, "frames": 120, "buttons": "LUP"}])
 
     def test_run_collision_finish_and_wrapper(self):
+        import threading
+        from unittest import mock
         wrapper = self.root / "wrapper.py"
-        receipt = self.root / "wrapper-receipt"
-        wrapper.write_text("import pathlib, subprocess, sys\n"
-                           "code = subprocess.call(sys.argv[2:])\n"
-                           "pathlib.Path(sys.argv[1]).write_text(str(code))\n", encoding="utf-8")
-        session = self.start(wrapper=[sys.executable, "-I", str(wrapper), str(receipt)])
-        self.assertFalse(receipt.exists())   # (admission lasts as long as the game, not just the launch reply)
+        receipt, release = self.root / "wrapper-receipt", self.root / "wrapper-release"
+        self.addCleanup(release.touch)
+        wrapper.write_text("import pathlib, subprocess, sys, time\n"
+                           "code = subprocess.call(sys.argv[3:])\n"
+                           "pathlib.Path(sys.argv[1]).write_text(str(code))\n"
+                           "while not pathlib.Path(sys.argv[2]).exists(): time.sleep(0.02)\n", encoding="utf-8")
+        with mock.patch.object(self.m.subprocess, "Popen", wraps=subprocess.Popen) as spawn:
+            session = self.start(wrapper=[sys.executable, "-I", str(wrapper), str(receipt), str(release)])
+        self.assertTrue(spawn.call_args.kwargs["close_fds"])
+        self.assertTrue(spawn.call_args.kwargs["stdout"].closed)
+        self.assertFalse(receipt.exists())
         with self.assertRaisesRegex(self.m.Failed, "new or empty"):
             self.start(run=str(session.folder))
-        session.stop()
-        deadline = time.monotonic() + 5
-        while not receipt.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        self.assertEqual(receipt.read_text(), "0")
+        results, errors = [], []
+
+        def stop():
+            try:
+                results.append(session.stop())
+            except BaseException as e:
+                errors.append(e)
+
+        thread = threading.Thread(target=stop)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 5
+            while not receipt.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(receipt.read_text(), "0")
+            self.assertTrue(thread.is_alive(), "stop returned before the admission wrapper closed its log handle")
+            with self.assertRaisesRegex(self.m.Failed, "still has a live"):
+                session.finish()
+        finally:
+            release.touch()
+            thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(results[0]["exit_code"], 0)
+        self.assertFalse(self.m.owners_alive(session.info()))
+        # (Windows refuses either rename while a process still holds the file)
+        for name in ("log.txt", "owner.log"):
+            path = session.folder / name
+            path.rename(path.with_suffix(".closed"))
         session.update(state="running", exit_code=None, stop_method=None)
         info = session.finish()
         self.assertEqual((info["state"], info["exit_code"], info["stop_method"]), ("finished", None, "observed-exit"))
+
+
+    def test_api_errors_have_one_exception_type(self):
+        def failed(call):
+            with self.assertRaises(self.m.Failed) as caught:
+                call()
+            self.assertEqual(caught.exception.code, 2)
+
+        failed(lambda: self.m.Session(self.root / "missing").info())
+        folder = self.root / "bad-run"
+        folder.mkdir()
+        (folder / "manifest.lock").write_bytes(b"\0")
+        manifest = folder / "manifest.json"
+        manifest.write_text("{not JSON", encoding="utf-8")
+        failed(lambda: self.m.Session(folder).info())
+        failed(lambda: self.m.list_runs(self.root))
+        manifest.write_text(json.dumps({"schema_version": 1, "log": str(folder / "missing.log")}), encoding="utf-8")
+        failed(lambda: self.m.Session(folder).log())
+        failed(lambda: self.m.start_session(str(self.root), exe=sys.executable, env={"BAD_VALUE": None}))
+
+
+    def test_save_alias_is_not_a_link(self):
+        from unittest import mock
+        source = self.root / "source-alias"
+        (source / "slot_00").mkdir(parents=True)
+        (source / "account.sav").write_bytes(b"authored account")
+        realpath = self.m.os.path.realpath
+        # (model short-to-long Windows spelling on either OS: these /./ paths reach the same folders)
+        with mock.patch.object(self.m.os.path, "realpath", side_effect=lambda p: realpath(p) + os.sep + "."):
+            dest = self.m.copy_save(str(source), str(self.root / "alias-data"))
+        self.assertEqual((Path(dest) / "account.sav").read_bytes(), b"authored account")
+        if not WINDOWS:
+            alias = self.root / "linked-data"
+            alias.symlink_to(self.root / "alias-data", target_is_directory=True)
+            with self.assertRaisesRegex(self.m.Failed, "link or reparse point"):
+                self.m.copy_save(str(source), str(alias))
+
+    def test_manifest_handles_and_binary_log_cursors(self):
+        from unittest import mock
+        session = self.start()
+        session.stop()
+        opened, original_open, original_replace = [], Path.open, os.replace
+
+        def opening(path, *args, **kwargs):
+            f = original_open(path, *args, **kwargs)
+            if path == session.manifest:
+                opened.append(f)
+            return f
+
+        def replacing(src, dest):
+            self.assertTrue(all(f.closed for f in opened), "a manifest reader prevents Windows atomic replacement")
+            return original_replace(src, dest)
+
+        with mock.patch.object(Path, "open", opening), mock.patch.object(self.m.os, "replace", replacing):
+            for i in range(10):
+                session.info()
+                session.update(test_counter=i)
+            self.assertEqual(session.info()["test_counter"], 9)
+        log = Path(session.info()["log"])
+        payload = "first\r\ncaf\u00e9\r\nthird\n".encode("utf-8")
+        log.write_bytes(payload)
+        first = session.log(since=0, limit=7)
+        self.assertEqual((first["text"], first["cursor"]), ("first\r\n", 7))
+        second = session.log(since=first["cursor"], limit=7)
+        self.assertEqual((second["text"], second["cursor"]), ("caf\u00e9\r\n", 14))
+        self.assertEqual(session.log(since=14)["text"], "third\n")
+        self.assertEqual(session.info()["log"], str(log))   # (native absolute path separators, not JSON-escaped text)
 
 
 class HookshotCtl(unittest.TestCase):
