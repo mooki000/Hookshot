@@ -126,4 +126,12 @@ float fps_graph(int64_t now, int count, fs::Frame* frames, bool* marks) {
     return slowest;
 }
 
+int fps_recent(fs::Frame* frames, int capacity) {
+    if (!frames || capacity <= 0) return 0;
+    std::lock_guard lock(ring_mu);
+    const int count = std::min(capacity, ring.size());
+    for (int i = 0; i < count; ++i) frames[i] = ring.back(count - 1 - i);
+    return count;
+}
+
 } // namespace mkwvk

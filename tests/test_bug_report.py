@@ -1,32 +1,19 @@
-"""The Insert menu's Bug report writes what an issue needs, and nothing private.
+"""Game-free Bug report fixtures, authored inputs only.
 
-gpu/vk/vk_bug_report.cpp is compiled alone with a driver that writes reports from a made-up game folder in a made-up home
-folder: this run's log and the run before's, with the home folder and the user's name in their paths, map lines and a crash.
-The driver answers the picture request as vk_replay.cpp's shot_ask does (a PNG of a later present, written on a thread).
-Checked:
-
-- the report's folder holds report.txt, both logs and the picture, and nothing else; no file in it names the home folder,
-  the user's name as a folder, or the game folder's path;
-- report.txt's sections are the issue form's (.github/ISSUE_TEMPLATE/1-game-problem.yml), and scripts/hardware_report.py
-  reads the GPU's vendor and class and the system from it as it reads an issue; its link fills in the form's own fields and
-  stays within 2000 characters (GitHub's sign-in page fails on longer ones): more switches than fit are counted, not listed;
-- where the player is comes from the last map line (host/hos_main.c logs them), the run before's crash line is named;
-- the switches set are listed by name, and a value only when it is a number, a size or on/off and its name holds none of
-  TOKEN, KEY, ROOM, SECRET, PASS, SERVER, USER: paths, addresses, scripts and secrets are left out; other variables are not
-  listed; the link carries the switches' names and never a value;
-- a log over 10 MB keeps its start and its end, and what is in its middle still counts; a log with NUL bytes (in a line,
-  or a run of them at its end, as a power cut leaves) is copied byte for byte, and what follows a NUL still counts;
-- started from a terminal (no log file), the run before's log is the game folder's hookshot_log.txt, and without a frame
-  the report says it has no picture; a picture that comes after the report went without it is removed again; a second
-  report in the same second gets a folder of its own; a folder that cannot be made is reported with the system's reason;
-- the wiring: the Gameplay tab's row and its help, the press, the picture asked of shot_ask (its own image, copied from the
-  game's frame without the menu), the host's map line.
-
-python -I -B tests/test_bug_report.py [--cxx g++]
+Compiles the writer and the locked raw-history accessor. Checks every diagnostic,
+issue-form compatibility, complete attachment manifests/ZIPs, privacy, independent
+file failures, pending crash/stall/unclean recovery, bounded structured ingestion,
+late captures, save metadata and the explicit LOCAL-only save-copy boundary.
+The same fixtures run on Linux and Windows; real platform/device probes and game
+screenshots need separate runtime evidence.
 """
 import argparse
 import importlib.util
 import os
+import json
+import time
+import zipfile
+from urllib.parse import unquote
 import re
 import subprocess
 import tempfile
@@ -34,10 +21,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "v2.1.0-rc.3-39-gbdfe09c (source 763271ad)"
+EXTRAS = {"settings.txt", "system.txt", "display.txt", "software.txt", "game-state.txt", "area-history.txt",
+          "frame-times.csv", "performance.txt", "input.txt", "save-metadata.txt", "issue-link.txt",
+          "manifest.json", "report.zip"}
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
-DRIVER = r'''#include "vk_bug_report.h"
+DRIVER = r'''#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+#include "vk_bug_report.h"
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -47,6 +42,7 @@ static int fails;
 static void say(const char* line) { std::printf("LOG %s\n", line); }
 static std::thread painter;
 static bool ask(const char* path, uint64_t ticket) {   // (vk_replay.cpp's part: the PNG of a later present, on a thread)
+    if (painter.joinable()) painter.join();
     painter = std::thread([p = std::string(path), ticket] {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         if (FILE* f = std::fopen(p.c_str(), "wb")) std::fputs("PNG stand-in", f), std::fclose(f);
@@ -60,6 +56,13 @@ static bool ask_late(const char* path, uint64_t ticket) { late_path = path, late
 static std::atomic<bool> held{true};   // (the menu's way: the report is still saving until the driver lets its picture ask go)
 static bool ask_held(const char*, uint64_t) {   // (no frame comes: the report goes without a picture)
     while (held.load()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return false;
+}
+static std::string failed_item, incident;
+static bool ask_failure(const char* path, uint64_t) {
+    const auto folder = std::filesystem::path((const char8_t*)path).parent_path();
+    if (failed_item == "drop-record") std::filesystem::remove(std::filesystem::path((const char8_t*)incident.c_str()));
+    else std::filesystem::create_directory(folder / failed_item);
     return false;
 }
 
@@ -83,11 +86,39 @@ int main(int argc, char** argv) {
     in.home = argv[4];
     in.user = argv[5];
     in.windows = std::string(argv[6]) == "1";
+    in.hostname = "private-machine";
+    const std::string private_text = in.home + "/example " + in.user + " private-machine 192.168.42.9 fd00::1234 user@example.org";
+    in.system_details = "kernel: Fixture 1.0\nFilesystem: btrfs\nRotational: no\nRAM in use: 1024 KiB\nSwap in use: 16 KiB\n"
+                        "Power: battery\nSteam Deck hardware: yes\nCompositor: gamescope\n" + private_text + "\n";
+    in.displays = "Known desktop size: 1280x800\nrefresh_mHz: 60000\nHDR: unknown\nSwapchain: 1280x800\nPresent mode: FIFO\n" + private_text;
+    in.software = "layer libraries mapped into the process: libVkLayer_fixture.so\n" + private_text;
+    in.situation = "Last published age: child\n" + private_text;
+    in.performance = "Texture budget_MiB: 4096\nCache hits: 25\nPreparation: completed fixture\n" + private_text + "\n";
+    in.input = "Layout preset: Xbox / PC\nStick deadzone: 10%\nA key 1: F (default code 69)\n" + private_text;
+    in.save_root = in.game_dir + "saves";
+    for (int i = 0; i < 300; ++i) in.frames.push_back({(i - 300) / 60.0, i >= 297 ? 100.0 : 10.0, 3.0});
+    if (mode == "save") in.save_slot = "slot_00";
+    if (mode == "invalid-save") in.save_slot = "../private";
+    if (mode == "missing-save") in.save_slot = "slot_99";
+    if (mode.starts_with("fail-")) {
+        failed_item = mode.substr(5);
+        incident = in.game_dir + "bug-reports/pending/crash-20261112T120000Z.txt";
+        in.ask_picture = ask_failure;
+    }
+    if (mode == "huge-fields") in.version = in.gpu = in.system = std::string(4000, 'X');
     in.now = 1789000000;
     in.log = say;
     in.picture_wait_ms = mode == "picture" ? 30000 : 300;   // (a picture ends the wait as soon as it is written)
     if (mode == "picture") in.ask_picture = ask;
     if (mode == "late") in.ask_picture = ask_late;
+    if (mode == "recover" || mode == "recover-empty") {
+        const bool got = recover(in);
+        CHECK(got == (mode == "recover"));
+        for (int i = 0; i < 3000 && state() == kSaving; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (got) CHECK(state() == kSaved);
+        std::printf("FOLDER %s\n", got ? shown().c_str() : "");
+        return fails ? 1 : 0;
+    }
     if (mode == "start") {   // (the menu's way: on a thread of its own, its state read each frame)
         in.ask_picture = ask_held;
         CHECK(start(in));
@@ -123,6 +154,11 @@ int main(int argc, char** argv) {
     CHECK(redact("c:/users/john smith/Games", "C:\\Users\\John Smith", "John Smith", true) == "%USERPROFILE%/Games");
     CHECK(redact("D:\\Users\\JOHN SMITH\\x", "C:\\Users\\John Smith", "John Smith", true) == "D:\\Users\\<user>\\x");
     CHECK(redact("nothing here", "", "", false) == "nothing here");
+    CHECK(library_names("123 r-xp 000 00:00 0 /home/al/libVkLayer_fixture.so\n456 rw-p 000 00:00 0 /home/al/libVkLayer_fixture.so\n", true) ==
+          "libVkLayer_fixture.so\n");
+    CHECK(library_names("/home/al/liboverlay.so:/opt/libinject.so", false) == "libinject.so\nliboverlay.so\n");
+    CHECK(memory_fields("MemTotal: 1000 kB\nMemAvailable: 750 kB\nSwapTotal: 100 kB\nSwapFree: 90 kB\nName: private\n", false).find("RAM in use: 250 KiB") != std::string::npos);
+    CHECK(memory_fields("VmRSS: 123 kB\nVmSwap: 4 kB\nUid: 1000 1000\n", true) == "VmRSS: 123 KiB\nVmSwap: 4 KiB\n");
 
     // this PC's part: the system as the form asks it, and what fill_here finds
     std::printf("SYSTEM %s\n", system_text().c_str());
@@ -156,7 +192,7 @@ def run(exe, mode, game, current, home, user, windows):
 
 
 def files_of(folder):
-    return {p.name: p.read_text(encoding="utf-8", errors="replace") for p in folder.iterdir()}
+    return {p.name: p.read_text(encoding="utf-8", errors="replace") for p in folder.iterdir() if p.is_file() and p.suffix != ".zip"}
 
 
 def no_private(files, home, user, game):
@@ -164,6 +200,67 @@ def no_private(files, home, user, game):
         for needle in (home, home.replace("\\", "/"), game.rstrip("\\/")):
             check(needle.lower() not in text.lower(), "%s names %s" % (name, needle))
         check(not re.search(r"[/\\]" + re.escape(user) + r"(?![A-Za-z0-9._-])", text, re.I), "%s names the user as a folder" % name)
+        for needle in (user, "private-machine", "192.168.42.9", "fd00::1234", "user@example.org"):
+            check(not re.search(r"(?<![A-Za-z0-9._-])" + re.escape(needle) + r"(?![A-Za-z0-9._-])", unquote(text), re.I),
+                  "%s holds private token %s" % (name, needle))
+
+
+def bundle(folder, home, user, game):
+    meta = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    check(meta["schema"] == 1 and meta["report_id"] == folder.name, "manifest identity")
+    expected = set()
+    for entry in meta["files"]:
+        name = entry["name"]
+        check(not Path(name).is_absolute() and ".." not in Path(name).parts, "manifest path escaped folder")
+        if entry["status"] == "included":
+            check((folder / name).stat().st_size == entry["size"], "manifest size differs for " + name)
+            if entry["shareable"] and name != "report.zip":
+                expected.add(name)
+        else:
+            check(entry["reason"] and not entry["shareable"], "omission needs a reason and must not be shareable")
+    with zipfile.ZipFile(folder / "report.zip") as zipped:
+        check(set(zipped.namelist()) == expected and zipped.testzip() is None, "zip is not the manifest's explicit shareable list")
+        for name in expected:
+            check(zipped.read(name) == (folder / name).read_bytes(), "zip differs from folder for " + name)
+        no_private({name: zipped.read(name).decode("utf-8", "replace") for name in expected}, home, user, game)
+    no_private(files_of(folder), home, user, game)
+    return meta
+
+
+def history_fixture(cxx, tmp, windows):
+    source = (ROOT / "gpu/vk/vk_fps.cpp").read_text(encoding="utf-8")
+    start = source.index("int fps_recent(")
+    function = source[start:source.index("\n}\n", start) + 3]
+    check("std::lock_guard" in function and "ring_mu" in function, "history accessor must use the existing ring lock")
+    presented = source[source.index("void fps_presented()"):source.index("fs::Summary fps_summary")]
+    check("std::lock_guard" in presented and "ring_mu" in presented, "frame path no longer uses the same ring lock")
+    fixture = r'''#include "fps_stats.h"
+#include <mutex>
+#include <thread>
+#include <atomic>
+namespace fs = mkwvk::fps_stats;
+std::mutex ring_mu;
+fs::Ring<fs::kRing> ring;
+''' + function + r'''
+int main() {
+    fs::Frame copy[512];
+    if (fps_recent(copy, 512) != 0 || fps_recent(nullptr, 512) != 0 || fps_recent(copy, 0) != 0) return 1;
+    for (int i = 0; i < fs::kRing + 17; ++i) { fs::Frame f; f.at_ns = i; f.ms = float(i); ring.push(f); }
+    if (fps_recent(copy, 512) != 512 || copy[0].at_ns != fs::kRing + 17 - 512 || copy[511].at_ns != fs::kRing + 16) return 2;
+    std::atomic<bool> began{false}, ended{false};
+    std::unique_lock held(ring_mu);
+    std::thread t([&] { began = true; fps_recent(copy, 512); ended = true; });
+    while (!began) std::this_thread::yield();
+    if (ended) return 3;
+    held.unlock(); t.join();
+    return ended ? 0 : 4;
+}
+'''
+    cpp, exe = tmp / "history.cpp", tmp / ("history.exe" if windows else "history")
+    cpp.write_text(fixture, encoding="utf-8")
+    subprocess.run([cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", *([] if windows else ["-pthread"]),
+                    "-I", str(ROOT / "gpu/vk"), str(cpp), "-o", str(exe)], check=True)
+    return exe
 
 
 def wiring():
@@ -210,6 +307,14 @@ def wiring():
         check("label: " + label + "\n" in form, "the issue form has no field " + label)
     for field in ("version", "where", "gpu", "system", "settings"):
         check("id: " + field + "\n" in form, "the issue form has no field id " + field)
+    hid = (ROOT / "host/nn_hid.c").read_text(encoding="utf-8")
+    for name in ("pad_default", "key_default"):
+        pattern = name + r"\[[^;]+?\};"
+        a = re.sub(r"\s+", "", re.search(pattern, menu).group())
+        b = re.sub(r"\s+", "", re.search(pattern, hid).group())
+        check(a == b, "report binding baseline drifted from host " + name)
+    check("bug_report::recover(std::move(report))" in menu and "bug_report_snapshot(in)" in menu,
+          "automatic recovery or report snapshot not wired")
 
 
 def main():
@@ -221,6 +326,7 @@ def main():
     windows = os.name == "nt"
     with tempfile.TemporaryDirectory(prefix="bug-report-") as tmp:
         tmp = Path(tmp)
+        history_exe = history_fixture(a.cxx, tmp, windows)
         cpp = tmp / "driver.cpp"
         exe = tmp / ("driver.exe" if windows else "driver")
         cpp.write_text(DRIVER, encoding="utf-8")
@@ -228,6 +334,7 @@ def main():
         subprocess.run([a.cxx, "-std=c++20", "-O1", *([] if windows else ["-pthread"]), "-Wall", "-Wextra", "-Werror",
                         "-D_CRT_SECURE_NO_WARNINGS", "-I", str(ROOT / "gpu" / "vk"), str(cpp),
                         str(ROOT / "gpu" / "vk" / "vk_bug_report.cpp"), "-o", str(exe)], check=True)
+        subprocess.run([str(history_exe)], check=True)
         user = "alice"
         home = str(tmp / "home" / user)
         game_path = Path(home) / "Games" / "Hookshot"
@@ -256,10 +363,19 @@ def main():
         check(len(folders) == 1 and folders[0].startswith("bug-reports" + sep), "no report folder: %s" % out)
         folder = game_path / folders[0]
         files = files_of(folder)
-        check(set(files) == {"report.txt", "hookshot_log.txt", "hookshot_log.1.txt", "picture.png"},
+        check(set(files) == ({"report.txt", "hookshot_log.txt", "hookshot_log.1.txt", "picture.png", "picture-later.png"} | EXTRAS) - {"report.zip"},
               "the folder holds %s" % sorted(files))
         check(set(p.name for p in (game_path / "bug-reports").iterdir()) == {folder.name}, "more than the report's folder")
         no_private(files, home, user, game)
+        bundle(folder, home, user, game)
+        for name, value in {"system.txt": "Rotational: no", "display.txt": "1280x800", "software.txt": "libVkLayer_fixture.so",
+                            "game-state.txt": "Last published age: child", "area-history.txt": "HyruleField_Child",
+                            "input.txt": "Stick deadzone: 10%", "performance.txt": "1% low_fps"}.items():
+            check(value in files[name], name + " lost its authored input")
+        rows = files["frame-times.csv"].splitlines()
+        check(len(rows) == 301 and all(len(row.split(",")) == 3 for row in rows), "raw frame CSV")
+        check("Mean frame_ms: 10.900" in files["performance.txt"] and "1% low_fps (1000 / mean of slowest ceil(N/100)): 10.000" in files["performance.txt"] and
+              "Longest gap_ms: 100.000" in files["performance.txt"], "frame summary formula")
         copy = files["hookshot_log.txt"]
         for kept in (home_as + sep + "Games" + sep + "Hookshot" + sep + "romfs", home_as + "/Games/Hookshot/user\\save",
                      "/run/media/<user>/SD/Hookshot", "Malice and alice123 stay, as /x/alice123/ does"):
@@ -314,7 +430,7 @@ def main():
         folders, out = run(exe, "terminal", game, "", home, user, windows)
         check(len(folders) == 2 and folders[0] != folders[1] and all(folders), "two reports in a second: %s" % folders)
         files = files_of(game_path / folders[0])
-        check(set(files) == {"report.txt", "hookshot_log.1.txt"}, "from a terminal the folder holds %s" % sorted(files))
+        check(set(files) == ({"report.txt", "hookshot_log.1.txt"} | EXTRAS) - {"report.zip"}, "from a terminal the folder holds %s" % sorted(files))
         check("HyruleField_Child" in files["hookshot_log.1.txt"], "the run before's log is not the game folder's last one")
         report = files["report.txt"]
         check("terminal" in hw.section(report, "Where in the game") and "terminal" in hw.section(report, "hookshot_log.txt"),
@@ -383,7 +499,130 @@ def main():
         (blocked / "bug-reports").write_text("a file where the folder would go", encoding="utf-8")
         folders, out = run(exe, "plain", str(blocked) + os.sep, str(now_log), home, user, windows)
         said = next((ln for ln in out if "menu: bug report not written:" in ln), "")
-        check(folders == [""] and ("(Windows error " if windows else "(Not a directory)") in said, "no folder: %s" % out)
+        check(folders == [""] and "menu: bug report not written:" in said, "no folder: %s" % out)
+
+        # Every optional attachment failure still leaves a readable report; pending
+        # originals are consumed only after the complete manifest is published.
+        pending = game_path / "bug-reports" / "pending"
+        pending.mkdir()
+        old_id, current_id = "a" * 32, "b" * 32
+        previous_log = game_path / "hookshot_log.1.txt"
+        old_text = previous_log.read_text(encoding="utf-8")
+        old_text = old_text.replace("\n", "\n[hos host] run_id: " + old_id + "\n", 1)
+        old_text += "[hos host] CRASH: [x0] 00 01 02 03\n"
+        previous_log.write_text(old_text, encoding="utf-8")
+        now_log.write_text(now_log.read_text(encoding="utf-8").replace("\n", "\n[hos host] run_id: " + current_id + "\n", 1), encoding="utf-8")
+        incident_name = "crash-20261112T120000Z.txt"
+        record = pending / incident_name
+        authored = ("Hookshot crash record 1\nrun_id: " + old_id + "\nversion: v2.0.14\nwhen: 20261112T120000Z\n"
+                    "uptime_s: 42\nreason: fatal signal\nthread: alice private-machine\n"
+                    "module_offset: hookshot+0x1234\nlast_present_age_ms: unknown\nlog: hookshot_log.txt\n"
+                    "unknown_secret: never-share-this\nversion: " + "Q" * 200 + "\n"
+                    "reason: /home/alice private-machine 192.168.42.9 fd00::1234\nrecord_complete: yes\n")
+        for failed_name in sorted(EXTRAS - {"report.zip", "manifest.json"}) + ["report.zip"]:
+            record.write_text(authored, encoding="utf-8")
+            folders, out = run(exe, "fail-" + failed_name, game, str(now_log), home, user, windows)
+            result = game_path / folders[0]
+            check(record.exists(), "partial report consumed original " + failed_name)
+            meta = json.loads((result / "manifest.json").read_text(encoding="utf-8"))
+            check(any(x["name"] == failed_name and x["status"] == "failed" for x in meta["files"]),
+                  "failure not named in manifest: " + failed_name)
+            check(failed_name in (result / "report.txt").read_text(encoding="utf-8"), "failure absent from human manifest")
+            if failed_name != "report.zip":
+                bundle(result, home, user, game)
+        record.write_text(authored, encoding="utf-8")
+        folders, _ = run(exe, "fail-manifest.json", game, str(now_log), home, user, windows)
+        check(record.exists() and "FAILED to publish" in (game_path / folders[0] / "report.txt").read_text(encoding="utf-8"),
+              "manifest failure did not preserve original")
+        record.write_text(authored, encoding="utf-8")
+        folders, _ = run(exe, "fail-drop-record", game, str(now_log), home, user, windows)
+        check("record missing" in (game_path / folders[0] / "report.txt").read_text(encoding="utf-8"), "missing record not named")
+
+        record.write_text(authored, encoding="utf-8")
+        dump = record.with_suffix(".dmp")
+        dump.write_bytes(b"LOCAL-ONLY-DUMP")
+        stack = record.with_suffix(".stacks.txt")
+        stack.write_text('Hookshot stall stacks 1\nthreads: 1 (limit 512; best effort, not simultaneous)\n'
+                         'thread 123 "alice private-machine" (partial stack)\n  0 libc.so.6+0x1234\n'
+                         'private: never-share-this\n', encoding="utf-8")
+        folders, _ = run(exe, "recover", game, str(now_log), home, user, windows)
+        result = game_path / folders[0]
+        meta = bundle(result, home, user, game)
+        check(not record.exists() and not stack.exists() and dump.exists(), "record move or local dump boundary")
+        check((result / incident_name).exists() and "never-share-this" not in (result / incident_name).read_text(encoding="utf-8"),
+              "unknown pending field leaked")
+        check("lines left out" in (result / incident_name).read_text(encoding="utf-8") and
+              "Q" * 200 not in (result / incident_name).read_text(encoding="utf-8"), "over-long field retained")
+        check(any(x.get("incident_id") == record.stem for x in meta["files"]), "stable incident ID lost")
+        check("hookshot_log.txt" not in files_of(result) and "v2.0.14" in (result / "report.txt").read_text(encoding="utf-8"),
+              "recovery substituted new run for old")
+        check("picture.png" not in files_of(result), "recovery took a new-run picture")
+
+        check("including bytes of memory near three registers" in (result / "report.txt").read_text(encoding="utf-8"),
+              "existing crash memory lines not disclosed")
+        check("CRASH: [x0] 00 01 02 03" in (result / "hookshot_log.1.txt").read_text(encoding="utf-8"),
+              "original crash memory lines were stripped")
+        # Rotation beyond .1 is matched by identity, never by filename or timestamps.
+        previous_log.unlink()
+        third_log = game_path / "hookshot_log.3.txt"
+        third_log.write_text(old_text, encoding="utf-8")
+        record.write_text(authored, encoding="utf-8")
+        folders, _ = run(exe, "recover", game, str(now_log), home, user, windows)
+        result = game_path / folders[0]
+        bundle(result, home, user, game)
+        check((result / "hookshot_log.3.txt").is_file() and not (result / "hookshot_log.txt").exists(),
+              "rotation .3 matched to current run instead")
+        third_log.unlink()
+        record.write_text(authored, encoding="utf-8")
+        folders, _ = run(exe, "recover", game, str(now_log), home, user, windows)
+        result = game_path / folders[0]
+        bundle(result, home, user, game)
+        check("the log of that run has aged out" in (result / "report.txt").read_text(encoding="utf-8") and
+              not any(result.glob("hookshot_log*.txt")), "aged-out incident received an unrelated log")
+        record.write_text(authored.replace("run_id: " + old_id, "run_id: unknown"), encoding="utf-8")
+        folders, _ = run(exe, "recover", game, str(now_log), home, user, windows)
+        result = game_path / folders[0]
+        check("no run id: the log of that record could not be matched" in (result / "report.txt").read_text(encoding="utf-8"),
+              "legacy record guessed a log")
+        resumed = pending / "stall-20261112T120001Z-7-1.txt"
+        resumed.write_text("Hookshot stall record 1\nreason: no present\nresumed: yes, after 11 s\n", encoding="utf-8")
+        before_folders = set((game_path / "bug-reports").iterdir())
+        folders, _ = run(exe, "recover-empty", game, str(now_log), home, user, windows)
+        check(folders == [""] and set((game_path / "bug-reports").iterdir()) == before_folders and resumed.exists(),
+              "resumed stall announced at start")
+        folders, _ = run(exe, "plain", game, str(now_log), home, user, windows)
+        result = game_path / folders[0]
+        bundle(result, home, user, game)
+        check((result / resumed.name).exists() and not resumed.exists(), "manual report lost resumed stall")
+        unclean = pending / "unclean-20261112T120002Z-7-2.txt"
+        unclean.write_text("Hookshot unclean record 1\nreason: ended without a clean exit\nversion: v2.0.14\n", encoding="utf-8")
+        folders, _ = run(exe, "recover", game, str(now_log), home, user, windows)
+        result = game_path / folders[0]
+        bundle(result, home, user, game)
+        check("last run did not end cleanly; not evidence of a crash" in (result / "report.txt").read_text(encoding="utf-8"),
+              "unclean end misclassified")
+
+        # Metadata never reads payloads; only an explicit, validated local slot
+        # selection can copy them, and neither the ZIP nor its manifest marks them shareable.
+        slot = game_path / "saves" / "slot_00"
+        slot.mkdir(parents=True)
+        payload = b"AUTHORED-SAVE-PAYLOAD"
+        (slot / "progress.sav").write_bytes(payload)
+        for mode in ("plain", "save", "invalid-save", "missing-save"):
+            started = time.monotonic()
+            folders, _ = run(exe, mode, game, str(now_log), home, user, windows)
+            check(time.monotonic() - started < 6, "ordinary report exceeded a few seconds")
+            result = game_path / folders[0]
+            meta = bundle(result, home, user, game)
+            check(f"slot_00/progress.sav: {len(payload)} bytes" in (result / "save-metadata.txt").read_text(encoding="utf-8"), "save metadata")
+            check("must not be shared" in (result / "report.txt").read_text(encoding="utf-8"), "local-save warning")
+            check((result / "save/slot_00/progress.sav").exists() == (mode == "save"), "save opt-in boundary")
+            with zipfile.ZipFile(result / "report.zip") as zipped:
+                check(all(payload not in zipped.read(n) for n in zipped.namelist()), "save data entered zip")
+            if mode == "save":
+                check(any(x["name"] == "save/slot_00/progress.sav" and not x["shareable"] for x in meta["files"]), "save marked shareable")
+        folders, _ = run(exe, "huge-fields", game, str(now_log), home, user, windows)
+        check(len((game_path / folders[0] / "issue-link.txt").read_text(encoding="utf-8").strip()) <= 2000, "long hardware fields escaped link cap")
     print("bug report: ok (report.txt as the issue form, both logs redacted, the picture, the long log, the terminal start, "
           "switch values, NUL bytes, the folder's reason)")
 

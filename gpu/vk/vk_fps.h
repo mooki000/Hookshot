@@ -44,5 +44,8 @@ fps_stats::Summary fps_summary(int64_t now, int64_t window, int64_t low_window);
 /// count columns: per column its slowest frame (copied into frames[c], ms 0 for none) and whether it built pipelines or left
 /// draws out; returns the slowest frame time shown
 float fps_graph(int64_t now, int count, fps_stats::Frame* frames, bool* marks);
+/// Up to capacity existing frames, oldest first, copied under the existing ring lock.
+/// No measurement is enabled; Off/FPS can return no frames or older retained samples.
+int fps_recent(fps_stats::Frame* frames, int capacity);
 
 } // namespace mkwvk

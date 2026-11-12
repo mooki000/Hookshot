@@ -414,19 +414,43 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
   holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=<61-1000>` sets a cap for one
   run.
-- **Bug report** writes a folder `bug-reports/<date>_<time>` in the game folder with what an issue needs: `report.txt`,
-  which answers the [game problem form](https://github.com/NotRexed/Hookshot/issues/new?template=1-game-problem.yml)'s
-  questions under its own headings (the version, the map you are in, your graphics card and driver, CPU, RAM and
-  system, the menu options and the `RX_`/`HOS_` switches you changed) and ends with a link that opens the form with them
-  filled in (the switches by name only); `hookshot_log.txt` (this run's log so far) and `hookshot_log.1.txt` (the run
-  before's, which has the crash if the game crashed last time); and `picture.png`, the game's picture without the menu.
-  Your home folder is written `~` (`%USERPROFILE%` on Windows) and your user name `<user>` in the logs' paths. A switch's
-  value is written only when it is a number, a size or on/off, and never for a name with `TOKEN`, `KEY`, `ROOM`,
-  `SECRET`, `PASS`, `SERVER` or `USER` in it; other values read `(value left out)`. Nothing else goes in (no saves, no
-  game files, not `hookshot_options.ini` or `hookshot_env.txt` themselves), and nothing is sent: open the form, write
-  what happened, and drag the folder's files into it (from File Explorer on Windows, a file manager on Linux; on a Steam
-  Deck, in Desktop Mode). The row then shows the folder's name. A game that stops before its menu can be used leaves its
-  log as `hookshot_log.1.txt`: start it again, or attach that file yourself.
+- **Bug report** still takes one press in **Gameplay**. It writes a new folder
+  `bug-reports/<date>_<time>` in the game folder. Read `report.txt` and check the pictures before sharing
+  `report.zip`; `issue-link.txt` is a filled-in Game problem form link you may open yourself. The game
+  opens no browser, clipboard or file manager, and sends nothing.
+  `report.txt` keeps the issue form's headings and lists every file, its size, and anything unavailable
+  or failed. `manifest.json` is the same inventory as attachment metadata for other tools, not a sender.
+  The folder and zip hold:
+  - `hookshot_log.txt` and `hookshot_log.1.txt`: this run so far and the run before, bounded to 10 MiB each;
+  - `picture.png` and, when another frame arrives, `picture-later.png`: game-source pictures without
+    the menu. The second is always requested 250 ms after the first completes, not selected by a
+    black/loading-screen guess. Both share a three-second wait limit. Menu capture is not available;
+  - `system.txt`, `display.txt`, `software.txt`: system/storage/memory/power facts, the display and
+    swapchain facts the game knows, and loaded-library basenames/configured layers. These are **not**
+    proof of which Vulkan layers are active. Unknown monitor and compositor details stay unknown;
+  - `game-state.txt`, `area-history.txt`, `settings.txt`, `input.txt`: last-known map/age, the last
+    16 logged area changes (times only when logged), safe option/switch differences, layout,
+    deadzone, changed bindings and controller-name log evidence. No input event history is recorded;
+  - `frame-times.csv` and `performance.txt`: up to 512 existing frame samples, mean, 1% low, longest
+    interval, available GPU samples, process memory and existing renderer/cache log counters.
+    **Off/FPS collects no frame history**; the report never enables measurement. GPU samples may lag.
+    These are diagnostics, not a controlled performance comparison;
+  - `save-metadata.txt`: slot file names, sizes and last-write times, **not save contents**. The
+    loaded slot is unknown: the newest file is not assumed to be the loaded one.
+  Home paths, user/host names, network addresses and known secret values are redacted from text;
+  switch values are kept only when numeric/boolean and not secret-bearing. Raw options/environment
+  files, cache contents and binary dumps never enter the zip. Review pictures yourself for personal text.
+  If a crash, unresolved stall or unclean-end record is pending, the next start makes a local report.
+  Its `run_id` is matched against the startup head of the current log and rotations `.1` to `.4`;
+  an aged-out or unidentified log is reported as missing, never replaced by another run's.
+  The folder is shown under the row's help. An unclean end
+  does not prove a crash. A resumed stall is included only on a manual report. Failed copies retain
+  the originals; valid records keep their incident names. The game does not inspect live-run markers.
+  **Local save copy, off by default:** `RX_VK_BUG_REPORT_SAVE=slot_00` (or another `slot_XX`) copies
+  that player-selected slot into `save/` in the report folder. Invalid/missing slots are refused.
+  This is a best-effort local snapshot while play continues, not a proven checkpoint. It is never
+  zipped and **must not be shared**, even privately: [CONTRIBUTING.md](CONTRIBUTING.md) says
+  “No game files, keys, or anything made from them leave your PC.” No maintainer-sharing route is enabled.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
   included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
   edges smoothed), AMD FSR 3.1, or AMD FSR 4 or its Native AA (below). DLSS and DLAA look softer than the game's own: set
