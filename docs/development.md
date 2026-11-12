@@ -217,6 +217,10 @@ The mesh compute fallback draws its generated records through a vertex shader wi
 Its graphics pipelines keep dynamic primitive topology and primitive restart, but do not require a
 dynamic vertex binding stride (#2494, tracked in #1001). Ordinary vertex-input pipelines still use
 dynamic stride; native mesh pipelines do not use these three input-assembly/vertex-input states.
+Binding the fallback's static-stride pipeline invalidates dynamic strides. The draw path drops both
+vertex-bind skip caches at that bind, so the next ordinary draw sets its strides again even if the
+buffers are unchanged. Resolved buffer references remain cached; buffer handles, offsets and sizes
+are not invalidated by pipeline binding. Runtime fallback programs do not use pipeline libraries.
 
 ### Building
 
