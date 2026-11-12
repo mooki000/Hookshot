@@ -67,6 +67,9 @@ jobs:
       # nx2/prompt_assets.py's, pinned as nx2/prompt_requirements.txt and requirements.txt have them. The runner itself needs none)
       - name: Python packages for the tests
         run: python -m pip install --disable-pip-version-check --no-deps zstandard==0.25.0 pillow==13.0.0 numpy==2.5.4
+      # Optional local MCP adapter only; separate from the game's build dependencies, on both systems.
+      - name: Python package for MCP protocol tests
+        run: python -m pip install --disable-pip-version-check -r scripts/mcp_requirements.txt
       - name: Compilers and the SPIR-V validator
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++ clang spirv-tools ccache libdav1d-dev

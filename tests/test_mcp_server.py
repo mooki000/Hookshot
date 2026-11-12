@@ -1,279 +1,299 @@
-"""The Hookshot MCP server: protocol shape, input lines, and a full fake-game run.
+"""Real FastMCP clients and stdio against the shared, game-free control fixture.
 
-The fake game is a Python script: it reads the live input file and the screenshot request file and writes the same log
-lines the real host does. No game build, GPU or game files are involved.
-
+Adapted from Nicholas Gower's #1025 in-memory, stdio and live-doc-catalogue checks.
+No SDK replacement, game build, GPU or game data is used.
     python -I -B tests/test_mcp_server.py
 """
 import asyncio
+import base64
+import contextlib
 import json
+import os
+from pathlib import Path
+import queue
+import re
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+import threading
+import time
+import unittest
 
+RUN_ALL_MODULES = ["fastmcp"]
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-
+sys.path.insert(0, str(ROOT / "tests"))
 try:
-    from mcp import Client
-    from mcp.types import ImageContent
-except ModuleNotFoundError as exc:   # (the runner reports the missing package unless --strict; direct runs say so)
-    raise SystemExit(f"SKIP: {exc}")
-RUN_ALL_MODULES = ["mcp"]
-import hookshot_mcp as hookshot
-
-def run_async(coro):
-    return asyncio.run(coro)
+    from fastmcp import Client
+except ImportError:
+    raise unittest.SkipTest("install scripts/mcp_requirements.txt for MCP protocol tests")
+import hookshot_mcp as server
+from test_hookshot_ctl import FAKE
 
 
-def protocol_checks():
-    async def checks():
-        async with Client(hookshot.mcp) as client:
-            tools = await client.list_tools()
-            names = {tool.name for tool in tools.tools}
-            expected = {"launch", "stop", "status", "press", "stick", "sequence", "screenshot", "wait", "logs",
-                        "settings", "set_setting", "cheat"}
-            if names != expected:
-                raise SystemExit(f"unexpected tools: {sorted(names)}")
-            resources = {resource.uri for resource in (await client.list_resources()).resources}
-            if resources != {"hookshot://log", "hookshot://last-screenshot", "hookshot://status"}:
-                raise SystemExit(f"unexpected resources: {sorted(resources)}")
-            status = await client.call_tool("status", {})
-            if status.is_error or status.structured_content != {"launched": False, "running": False}:
-                raise SystemExit(f"status before launch: {status}")
-            logs = await client.call_tool("logs", {})
-            if not logs.is_error or "no run yet" not in logs.content[0].text:
-                raise SystemExit(f"logs before launch: {logs}")
-            stopped = await client.call_tool("stop", {})
-            if stopped.is_error or stopped.structured_content != {"stopped": False, "already_stopped": True}:
-                raise SystemExit(f"stop before launch: {stopped}")
-    run_async(checks())
+class Fixture:
+    def __init__(self, root):
+        self.root = Path(root)
+        self.fake = self.root / "fake.py"
+        self.fake.write_text(FAKE, encoding="utf-8")
+        self.requests = self.root / "requests.jsonl"
+        self.cfg = server.Config(root=self.root / "runs", game_dir=str(self.root), exe=sys.executable,
+                                 image=str(self.fake), env={"FAKE_LOG": str(self.requests), "FAKE_SESSION": "1"})
+
+    def rows(self):
+        return [json.loads(line) for line in self.requests.read_text(encoding="utf-8").splitlines()] \
+            if self.requests.exists() else []
+
+    def cleanup(self):
+        for info in server.ctl.list_runs(self.cfg.root):
+            session = server.ctl.Session(info["run"])
+            if info["state"] not in ("finished", "failed"):
+                session.stop(timeout=0.2, terminate=True)
 
 
-def stdio_checks():
-    """The real transport: stdout must carry JSON-RPC and nothing else."""
-    with tempfile.TemporaryDirectory(prefix="hookshot-mcp-stdio-") as tmp:
-        proc = subprocess.Popen(
-            [sys.executable, "-I", "-B", str(ROOT / "scripts" / "hookshot_mcp.py"), "--work-dir", tmp],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+class InMemory(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="mcp-test-")
+        self.fixture = Fixture(self.tmp.name)
+        self.client = Client(server.create_server(self.fixture.cfg))
+        await self.client.__aenter__()
 
-        def send(message):
-            assert proc.stdin is not None
-            proc.stdin.write(json.dumps(message) + "\n")
-            proc.stdin.flush()
+    async def asyncTearDown(self):
+        await self.client.__aexit__(None, None, None)
+        await asyncio.to_thread(self.fixture.cleanup)
+        self.tmp.cleanup()
 
-        def receive():
-            assert proc.stdout is not None
-            line = proc.stdout.readline()
-            if not line:
-                raise SystemExit("the MCP server closed stdout")
-            return json.loads(line)
+    async def call(self, tool_name, **args):
+        result = await self.client.call_tool(tool_name, args)
+        return result.structured_content
 
-        try:
-            send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                "protocolVersion": "2025-06-18", "capabilities": {},
-                "clientInfo": {"name": "hookshot-test", "version": "1"}}})
-            initialized = receive()
-            if initialized.get("result", {}).get("serverInfo", {}).get("name") != "hookshot":
-                raise SystemExit(f"initialize over stdio: {initialized}")
-            send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-            send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-            listed = receive()
-            names = {tool["name"] for tool in listed.get("result", {}).get("tools", [])}
-            if "screenshot" not in names or "launch" not in names:
-                raise SystemExit(f"tools/list over stdio: {listed}")
-            assert proc.stdin is not None
-            proc.stdin.close()
-            proc.wait(timeout=10)
-        finally:
-            if proc.poll() is None:
-                proc.terminate()
+    async def error(self, tool_name, code, **args):
+        result = await self.client.call_tool(tool_name, args, raise_on_error=False)
+        self.assertTrue(result.is_error, result)
+        self.assertIn('"code": %d' % code, result.content[0].text)
+        return result
+
+    async def until(self, predicate):
+        deadline = time.monotonic() + 5
+        while not predicate():
+            self.assertLess(time.monotonic(), deadline, "fake did not reach expected condition")
+            await asyncio.sleep(0.01)
+
+    async def test_catalogue_matches_docs_and_models(self):
+        tools = await self.client.list_tools()
+        templates = await self.client.list_resource_templates()
+        doc = (ROOT / "docs" / "mcp.md").read_text(encoding="utf-8")
+        section = doc.split("## Tools\n", 1)[1].split("\n## ", 1)[0]
+        resources = doc.split("## Resources\n", 1)[1].split("\n## ", 1)[0]
+        self.assertEqual({t.name for t in tools}, set(re.findall(r"^\| `([^`]+)` \|", section, re.M)))
+        self.assertEqual({t.uri_template for t in templates},
+                         set(re.findall(r"^\| `([^`]+)` \|", resources, re.M)))
+        self.assertEqual(await self.client.list_resources(), [])
+        for tool in tools:
+            self.assertIsNotNone(tool.output_schema, tool.name)
+            self.assertIsNotNone(tool.annotations.read_only_hint, tool.name)
+            self.assertIsNotNone(tool.annotations.destructive_hint, tool.name)
+        launch = next(t for t in tools if t.name == "launch")
+        self.assertNotIn("wrapper", launch.input_schema["properties"])
+        self.assertNotIn("exe", launch.input_schema["properties"])
+        self.assertEqual(server.version("fastmcp"), "4.1.3")
+        await self.error("status", 2)
+
+    async def test_full_session_and_resources(self):
+        source = self.fixture.root / "source"
+        (source / "slot_03").mkdir(parents=True)
+        (source / "account.sav").write_bytes(b"authored account")
+        (source / "slot_03" / "progress.sav").write_bytes(b"authored save")
+        launched = await self.call("launch", save=str(source), slot="03", ready="play")
+        key, info = launched["run_id"], launched["run"]
+        self.assertEqual(info["profile"], "test")
+        self.assertEqual(info["environment"]["HOS_HEADLESS"], "1")
+        self.assertEqual(info["environment"]["HOS_AUDIO"], "0")
+        self.assertEqual(Path(info["user"]).parent, Path(info["run"]))
+        self.assertEqual((source / "slot_03" / "progress.sav").read_bytes(), b"authored save")
+        self.assertEqual((await self.call("runs"))["runs"][0]["run_id"], key)
+        self.assertEqual((await self.call("show"))["run"], info)
+        self.assertEqual((await self.call("attach", run=info["run"]))["run_id"], key)
+        status = await self.call("status")
+        self.assertEqual(status["bridge"]["state"], "play")
+        self.assertEqual(status["run"]["pid"], info["pid"])
+        await self.call("press", buttons="A", frames=3, at=2)
+        await self.call("stick", which="left", x=0.25, y=-0.5, frames=4)
+        await self.call("stick", which="right", x=0, y=0, frames=4)
+        seq = (await self.call("sequence", script="0.025:A/25,1:B/1", units="hos"))["reply"]
+        self.assertEqual(seq["end"] - seq["start"], 59)
+        await self.call("sequence", steps=[{"at": 12, "frames": 5, "lx": 0.1}])
+        encoded = [r for r in self.fixture.rows() if r["cmd"] == "sequence"]
+        self.assertEqual(encoded[0]["steps"], [{"at": 2, "frames": 2, "buttons": "A"},
+                                               {"at": 60, "frames": 1, "buttons": "B"}])
+        self.assertTrue(encoded[0]["exclusive"])
+        await self.call("release")
+        await self.call("wait", frames=3)
+        await self.call("wait", event="state", state="play")
+        await self.call("wait", event="map", map="authored-map")
+        await self.call("wait", event="wall", seconds=0.01)
+        self.assertEqual((await self.call("options", name="fps_counter"))["reply"]["option"]["value"], 0)
+        await self.call("set_option", name="fps_counter", value=True)
+        self.assertEqual((await self.call("options", name="fps_counter"))["reply"]["option"]["value"], 1)
+        self.assertIn("destinations", (await self.call("teleport"))["reply"])
+        await self.call("age", to="child")
+        self.assertEqual(len((await self.call("saves"))["reply"]["slots"]), 2)
+        self.assertEqual(len((await self.call("slots"))["reply"]["slots"]), 2)
+        cursor = (await self.call("logs", lines=0))["cursor"]
+        shot = await self.client.call_tool("screenshot", {})
+        self.assertFalse(any(c.type == "image" for c in shot.content))
+        path = Path(shot.structured_content["reply"]["path"])
+        self.assertEqual(path.parent, Path(info["run"]) / "shots")
+        self.assertTrue(path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+        inline = await self.client.call_tool("screenshot", {"inline": True})
+        picture = next(c for c in inline.content if c.type == "image")
+        self.assertTrue(base64.b64decode(picture.data).startswith(b"\x89PNG"))
+        await self.call("expect_log", text="(the control bridge)", since=cursor)
+        tail = await self.call("logs", limit=32)
+        self.assertLessEqual(len(tail["text"].encode()), 32)
+        history = await self.call("logs", since=cursor)
+        self.assertIn("written to", history["text"])
+        for kind in ("status", "log", "last-screenshot"):
+            resource = await self.client.read_resource(f"hookshot://runs/{key}/{kind}")
+            self.assertTrue(resource)
+        await self.error("set_option", 1, name="nope", value=0)
+        await self.error("wait", 3, event="loading_end", timeout=0.1)
+        await self.error("sequence", 2, steps=[])
+        stopped = (await self.call("stop"))["run"]
+        self.assertTrue(stopped["process_exited"])
+        self.assertEqual(stopped["save_drain"], "unsupported")
+        self.assertEqual((await self.call("stop"))["run"], stopped)
+        self.assertEqual((await self.call("finish"))["run"], stopped)
+        self.assertIsNone((await self.call("status"))["bridge"])
+
+    async def test_serialization_and_wait_cancellation(self):
+        await self.call("launch")
+        wait = asyncio.create_task(self.client.call_tool("wait", {"event": "state", "state": "never", "timeout": 0.2},
+                                                        raise_on_error=False))
+        await self.until(lambda: any(r["cmd"] == "_wait_begin" for r in self.fixture.rows()))
+        pending_status = asyncio.create_task(self.call("status"))
+        self.assertTrue((await wait).is_error)
+        await pending_status
+        rows = self.fixture.rows()
+        end = next(i for i, r in enumerate(rows) if r["cmd"] == "_wait_end")
+        self.assertTrue(any(r["cmd"] == "status" for r in rows[end + 1:]))
+        wait = asyncio.create_task(self.call("wait", event="state", state="never", timeout=60))
+        await self.until(lambda: sum(r["cmd"] == "_wait_begin" for r in self.fixture.rows()) == 2)
+        wait.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await wait
+        await asyncio.wait_for(self.call("status"), timeout=3)
+        await self.until(lambda: any(r.get("cancelled") for r in self.fixture.rows()))
+        await self.call("press", buttons="B")
+
+    async def test_failed_launch_has_receipt_and_no_live_process(self):
+        self.fixture.cfg.env["FAKE_NO_BRIDGE"] = "1"
+        await self.error("launch", 3, timeout=0.2)
+        run = (await self.call("runs"))["runs"][0]["run"]
+        self.assertEqual(run["state"], "failed")
+        self.assertTrue(run["process_exited"])
+        self.assertFalse(server.ctl.same_process(run["pid"], run["process_start"]))
+        self.assertFalse(server.ctl.owners_alive(run))
+        self.assertTrue(Path(run["log"]).exists())
+
+    async def test_stop_does_not_force_without_opt_in(self):
+        self.fixture.cfg.env["FAKE_REFUSE_QUIT"] = "1"
+        await self.call("launch")
+        timed = (await self.call("stop", timeout=0.1))["run"]
+        self.assertFalse(timed["stop_result"]["process_exited"])
+        self.assertFalse(timed["stop_result"]["forced"])
+        stopped = (await self.call("stop", timeout=0.1, terminate=True))["run"]
+        self.assertTrue(stopped["stop_result"]["forced"])
+        self.assertEqual(stopped["save_drain"], "unsupported")
+
+    async def test_images_and_json_are_bounded(self):
+        launched = await self.call("launch")
+        shot = await self.call("screenshot")
+        path = Path(shot["reply"]["path"])
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * server.MAX_IMAGE)
+        with self.assertRaises(server.ctl.Failed):
+            server.image_bytes(path)
+        with self.assertRaises(Exception):
+            await self.client.read_resource(f"hookshot://runs/{launched['run_id']}/last-screenshot")
+        session = server.ctl.Session(launched["run"]["run"])
+        session.update(extra="x" * server.MAX_JSON)
+        await self.error("show", 2)
+        session.update(extra=None)
+
+
+class Stdio(unittest.TestCase):
+    def test_initialize_list_call_resource_error_and_eof(self):
+        with tempfile.TemporaryDirectory(prefix="mcp-wire-") as tmp:
+            fixture = Fixture(tmp)
+            with open(Path(tmp) / "server.stderr", "w+", encoding="utf-8") as err:
+                args = [sys.executable, "-I", "-B", str(ROOT / "scripts" / "hookshot_mcp.py"),
+                        "--root", str(fixture.cfg.root), "--game-dir", tmp, "--exe", sys.executable,
+                        "--image", str(fixture.fake)]
+                for key, value in fixture.cfg.env.items():
+                    args += ["--env", key + "=" + value]
+                proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
+                                        text=True, encoding="utf-8")
+                incoming = queue.Queue()
+
+                def reader():
+                    for line in proc.stdout:
+                        incoming.put(json.loads(line))  # any stdout diagnostics fail the transport test
+                    incoming.put(None)
+
+                thread = threading.Thread(target=reader, daemon=True)
+                thread.start()
+                rid = 0
+
+                def send(method, params=None, notify=False):
+                    nonlocal rid
+                    msg = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+                    if not notify:
+                        rid += 1
+                        msg["id"] = rid
+                    proc.stdin.write(json.dumps(msg) + "\n")
+                    proc.stdin.flush()
+                    if notify:
+                        return None
+                    while True:
+                        reply = incoming.get(timeout=30)
+                        self.assertIsNotNone(reply)
+                        if reply.get("id") == rid:
+                            return reply
+
                 try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-
-
-def native_checks():
-    """The game-side seams the server depends on are still there."""
-    vk = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    backend = (ROOT / "host" / "rx_backend.c").read_text(encoding="utf-8")
-    webgpu = (ROOT / "gpu" / "render" / "rx_core.cpp").read_text(encoding="utf-8")
-    hid = (ROOT / "host" / "nn_hid.c").read_text(encoding="utf-8")
-    main = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
-    for needle in ("RX_VK_SHOT_FILE", "read_shot_request", "written to", "menu_settings_dump", "menu_cheat"):
-        if needle not in vk:
-            raise SystemExit(f"gpu/vk/vk_replay.cpp lost {needle}")
-    for needle in ("mcp: dump end", "menu_settings_dump", "menu_cheat", "HOS_OOT_CHEATS"):
-        if needle not in menu:
-            raise SystemExit(f"gpu/vk/vk_menu.cpp lost {needle}")
-    for needle in ("rx_settings_dump", "rx_setting_set", "rx_cheat"):
-        if needle not in backend:
-            raise SystemExit(f"host/rx_backend.c lost {needle}")
-    for needle in ("!settings", "!setting ", "rx_cheat", "mcp: cheat ok"):
-        if needle not in hid:
-            raise SystemExit(f"host/nn_hid.c lost {needle}")
-    if "RX_SCREENSHOT_FILE" not in webgpu:
-        raise SystemExit("gpu/render/rx_core.cpp lost RX_SCREENSHOT_FILE")
-    for needle in ("HOS_INPUT_SCRIPT_ONLY", "LX=", "!quit"):
-        if needle not in hid:
-            raise SystemExit(f"host/nn_hid.c lost {needle}")
-    if "HOOKSHOT_NO_ENV_FILE" not in main:
-        raise SystemExit("host/hos_main.c lost HOOKSHOT_NO_ENV_FILE")
-
-
-def line_checks():
-    assert hookshot.normalize_buttons("A+LUP") == ["A", "LUP"]
-    assert hookshot.normalize_buttons(["plus", "left"]) == ["PLUS", "LEFT"]
-    assert hookshot.stick_tokens("left", 1.0, 0.0) == ["LX=32767"]
-    assert hookshot.stick_tokens("right", 0.0, -1.0) == ["RY=-32767"]
-    try:
-        hookshot.stick_tokens("left", 0.0, 0.0)
-    except hookshot.ToolError:
-        pass
-    else:
-        raise SystemExit("a centred stick was accepted")
-    steps = [hookshot.Step(at_ms=1000, buttons=["A"]), hookshot.Step(at_ms=0, buttons=["PLUS"], hold_ms=100)]
-    line, duration = hookshot.sequence_line(steps)
-    if line != "0:PLUS/100,1000:A/200" or duration != 1200:
-        raise SystemExit(f"sequence line: {line!r} {duration}")
-    try:
-        hookshot.normalize_buttons("NOPE")
-    except hookshot.ToolError:
-        pass
-    else:
-        raise SystemExit("an unknown button was accepted")
-
-
-def env_checks():
-    with tempfile.TemporaryDirectory(prefix="hookshot-mcp-env-") as tmp:
-        folder = Path(tmp)
-        exe = folder / ("hookshot.exe" if __import__("os").name == "nt" else "hookshot")
-        exe.write_bytes(b"")
-        (folder / "hookshot_env.txt").write_text(
-            "\ufeff# a note\nHOS_TEST=1\nHOS_AUDIO=1\nHOS_HEADLESS=0\nRX_VK_SHOT_FILE=bad\n", encoding="utf-8")
-        values = hookshot.read_env_file(exe)
-        if values != {"HOS_TEST": "1", "HOS_AUDIO": "1", "HOS_HEADLESS": "0", "RX_VK_SHOT_FILE": "bad"}:
-            raise SystemExit(f"env file parse: {values}")
-        image = folder / "image.bin"
-        image.write_bytes(b"")
-        romfs = folder / "romfs"
-        romfs.mkdir()
-        cfg = hookshot.Config(work_dir=folder / "mcp", exe=exe, image=image, romfs=romfs, env_file=True)
-        session = hookshot.GameSession(cfg, hookshot.LaunchOptions(force=True, extra_env={"RX_VK_FLASH": "1"}))
-        env = session.build_env()
-        if env.get("HOOKSHOT_NO_ENV_FILE") != "1" or env.get("HOS_HEADLESS") != "1":
-            raise SystemExit("the game would read hookshot_env.txt a second time")
-        if env.get("HOS_AUDIO") != "0" or env.get("RX_VK_FLASH") != "1" or env.get("HOS_TEST") != "1":
-            raise SystemExit("the server's control switches did not override the env file")
-        if env.get("HOS_INPUT_SCRIPT_ONLY") != "1" or env.get("HOS_INPUT_LIVE") != str(session.input_path):
-            raise SystemExit("script-only input is not configured")
-        if env.get("RX_VK_SHOT_FILE") != str(session.request_path) or env.get("RX_SCREENSHOT_FILE") != str(session.request_path):
-            raise SystemExit("screenshot request paths are not configured")
-
-
-def game_dir_checks():
-    """A folder made by the builder or make_game.py keeps the game in bin\\, with the launcher at the top: --game-dir must
-    choose the game, not the launcher that would open the builder instead (builder/setup/setup.c)."""
-    with tempfile.TemporaryDirectory(prefix="hookshot-mcp-paths-") as tmp:
-        folder = Path(tmp) / "game"
-        (folder / "bin").mkdir(parents=True)
-        game = folder / "bin" / hookshot.exe_name()
-        game.write_bytes(b"")
-        (folder / hookshot.exe_name()).write_bytes(b"")   # (the launcher)
-        (folder / "image.bin").write_bytes(b"")
-        (folder / "romfs").mkdir()
-        paths = hookshot.resolve_paths(hookshot.Config(work_dir=Path(tmp) / "mcp", game_dir=folder),
-                                       hookshot.LaunchOptions())
-        if paths["exe"] != game.resolve():
-            raise SystemExit(f"game_dir chose {paths['exe']}, not the game in bin")
-        # (a development build, which has no bin\ folder, keeps the game at the top)
-        (folder / "bin" / hookshot.exe_name()).unlink()
-        (folder / "bin").rmdir()
-        paths = hookshot.resolve_paths(hookshot.Config(work_dir=Path(tmp) / "mcp", game_dir=folder),
-                                       hookshot.LaunchOptions())
-        if paths["exe"] != (folder / hookshot.exe_name()).resolve():
-            raise SystemExit(f"a development build: game_dir chose {paths['exe']}")
-
-
-def fake_game_checks():
-    with tempfile.TemporaryDirectory(prefix="hookshot-mcp-run-") as tmp:
-        folder = Path(tmp)
-        fake = ROOT / "tests" / "fake_game.py"
-        romfs = folder / "romfs"
-        romfs.mkdir()
-        cfg = hookshot.Config(work_dir=folder / "mcp", exe=Path(sys.executable), image=fake, romfs=romfs,
-                              env_file=False)
-        session = hookshot.GameSession(cfg, hookshot.LaunchOptions(force=True))
-        old_controller = hookshot.CONTROLLER
-        controller = hookshot.Controller(cfg)
-        controller.session = session
-        hookshot.CONTROLLER = controller
-        try:
-            launched = session.launch()
-            if not launched.get("pid"):
-                raise SystemExit(f"launch did not return a process: {launched}")
-            press = session.press(["A"], hold_ms=10, settle_ms=0)
-            if not press["acked"]:
-                raise SystemExit("the fake game did not acknowledge the live input")
-            async def screenshot_tool():
-                async with Client(hookshot.mcp) as client:
-                    result = await client.call_tool("screenshot", {"inline": True, "timeout_ms": 5000})
-                    if result.is_error:
-                        raise SystemExit(f"screenshot tool: {result.content}")
-                    if not any(isinstance(item, ImageContent) for item in result.content):
-                        raise SystemExit(f"screenshot did not return an image block: {result.content}")
-                    if len(result.content) < 1 or "present 7" not in result.content[0].text:
-                        raise SystemExit(f"screenshot text: {result.content}")
-                    status = await client.call_tool("status", {})
-                    if not status.structured_content or not status.structured_content.get("ready"):
-                        raise SystemExit(f"status after a screenshot: {status}")
-            run_async(screenshot_tool())
-
-            async def settings_tools():
-                async with Client(hookshot.mcp) as client:
-                    listed = await client.call_tool("settings", {})
-                    got = listed.structured_content or {}
-                    if listed.is_error or len(got.get("settings", [])) != 2 or not got.get("cheats_enabled"):
-                        raise SystemExit(f"settings tool: {listed.content}")
-                    if not any(s["name"] == "text_speed" and s["text"] == "Normal" and s["tab"] == "gameplay"
-                               for s in got["settings"]):
-                        raise SystemExit(f"settings rows: {got['settings']}")
-                    if not any(c["name"] == "teleport" and got["teleports"][1]["name"] == "Hyrule Field"
-                               for c in got["cheats"]):
-                        raise SystemExit(f"cheat rows: {got['cheats']} {got['teleports']}")
-                    changed = await client.call_tool("set_setting", {"name": "frame_generation", "value": 3})
-                    if changed.is_error or (changed.structured_content or {}).get("value") != 3:
-                        raise SystemExit(f"set_setting: {changed.content}")
-                    acted = await client.call_tool("cheat", {"name": "teleport", "item": "Hyrule Field"})
-                    if acted.is_error or (acted.structured_content or {}).get("value") != 1:
-                        raise SystemExit(f"cheat: {acted.content}")
-                    wrong = await client.call_tool("cheat", {"name": "teleport", "item": "Nowhere"})
-                    if not wrong.is_error or "unknown teleport destination" not in wrong.content[0].text:
-                        raise SystemExit(f"a bad destination was accepted: {wrong.content}")
-            run_async(settings_tools())
-
-            stopped = session.stop()
-            if not stopped["stopped"]:
-                raise SystemExit(f"stop: {stopped}")
-        finally:
-            if session.alive():
-                session.stop(force=True)
-            hookshot.CONTROLLER = old_controller
-
-
-def main():
-    protocol_checks()
-    stdio_checks()
-    native_checks()
-    line_checks()
-    env_checks()
-    game_dir_checks()
-    fake_game_checks()
-    print("PASS: MCP protocol (in memory and stdio), native seams, input lines, environment, game_dir, settings and cheats, fake-game screenshot")
+                    hello = send("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                                "clientInfo": {"name": "hookshot-test", "version": "1"}})
+                    self.assertEqual(hello["result"]["serverInfo"]["name"], "hookshot")
+                    send("notifications/initialized", notify=True)
+                    tools = send("tools/list")["result"]["tools"]
+                    self.assertIn("launch", {t["name"] for t in tools})
+                    templates = send("resources/templates/list")["result"]["resourceTemplates"]
+                    self.assertEqual(len(templates), 3)
+                    launched = send("tools/call", {"name": "launch", "arguments": {}})["result"]
+                    self.assertFalse(launched.get("isError", False), launched)
+                    key = launched["structuredContent"]["run_id"]
+                    status = send("tools/call", {"name": "status", "arguments": {}})["result"]
+                    self.assertEqual(status["structuredContent"]["bridge"]["state"], "play")
+                    resource = send("resources/read", {"uri": f"hookshot://runs/{key}/status"})
+                    self.assertIn("contents", resource["result"])
+                    error = send("tools/call", {"name": "set_option", "arguments": {"name": "nope", "value": 1}})
+                    self.assertTrue(error["result"]["isError"])
+                    self.assertIn('"code": 1', error["result"]["content"][0]["text"])
+                    stopped = send("tools/call", {"name": "stop", "arguments": {}})
+                    self.assertTrue(stopped["result"]["structuredContent"]["run"]["process_exited"])
+                    proc.stdin.close()
+                    proc.wait(timeout=15)
+                    self.assertEqual(proc.returncode, 0)
+                    self.assertIsNone(incoming.get(timeout=5))
+                finally:
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait()
+                    proc.stdout.close()
+                    if not proc.stdin.closed:
+                        proc.stdin.close()
+                    fixture.cleanup()
 
 
 if __name__ == "__main__":
-    main()
+    unittest.main()
