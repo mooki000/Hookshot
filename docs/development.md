@@ -385,7 +385,7 @@ The other rows are 0 Off and 1 On. Some are read at the start, before the menu e
 
 These named keys, including `walk_mode` and `walk_speed`, are independent of the internal host/renderer option IDs in
 `gpu/vk/vk_api.h`; renumbering an option does not require changing a player's saved options file.
-Walk mode and Walk speed use IDs 52 and 53 respectively; the input regression check compiles the real header
+Walk mode and Walk speed use IDs 49 and 50 respectively; 52 is Skip opening's. The input regression check compiles the real header
 with the host's reads and checks the renderer's answers and menu rows against those names.
 
 `HOS_CONTROL=<socket path>` turns on the control bridge: a local socket a tool or coding agent drives the running game
