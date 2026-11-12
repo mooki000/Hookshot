@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 import tempfile
 import time
@@ -188,6 +189,11 @@ def validate_scenario(data):
                 usage(index, "expect_log needs a non-empty pattern")
             if value.get("since", "previous") not in ("previous", "start"):
                 usage(index, 'expect_log.since must be "previous" or "start"')
+            if value.get("regex"):
+                try:
+                    re.compile(value["pattern"])
+                except re.error as exc:
+                    usage(index, "expect_log regex: %s" % exc)
     return data
 
 
