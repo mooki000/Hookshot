@@ -3,12 +3,15 @@
 Extract the production warning and boot call. Authored memory-query and UI spies
 exercise the exact 7639 MiB RAM + 32767 MiB swap report, boundaries, query failure,
 unit conversion and headless behavior. Windows retains its RAM + page-file rule.
+On Linux, a second build selects the production Windows policy after the host
+headers are included; its memory query and UI remain spies, not Windows runtime.
 
     python -I -B tests/test_low_memory_notice.py [--cc gcc] [--source host/hos_main.c]
 """
 import argparse
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 RUN_ALL_ARGS = ["--cc", "{cxx}"]
@@ -35,6 +38,14 @@ FIXTURE = r"""
 #include <stdlib.h>
 #include <string.h>
 #include "hookshot_env.h"
+/* Preserve the real host's environment API before selecting a policy. No
+   production condition is changed: _WIN32 selects its existing Windows path. */
+#ifdef _WIN32
+#define TEST_NATIVE_WINDOWS
+#endif
+#if defined(TEST_WINDOWS_POLICY) && !defined(_WIN32)
+#define _WIN32 1
+#endif
 static unsigned long long ram_mb = 7639, swap_mb = 32767;
 static int query_failed, boxes;
 #ifndef _WIN32
@@ -82,7 +93,7 @@ static int MessageBoxA(void *w, const char *text, const char *caption, unsigned 
 int hos_sdl_load(void) { ++sdl_loads; return 0; }
 #endif
 static void headless(const char *value) {
-#ifdef _WIN32
+#ifdef TEST_NATIVE_WINDOWS
     _putenv_s("HOS_HEADLESS", value);
 #else
     setenv("HOS_HEADLESS", value, 1);
@@ -105,11 +116,18 @@ int main(void) {
         int got = memory_notice_text(ram_mb, swap_mb, text, sizeof text);
         CHECK(got == expected, "wrong warning decision (swap must not hide low RAM on Linux)");
         if (got) {
-            CHECK(strstr(text, "starts anyway"), "warning does not explain that startup continues");
 #if defined(__linux__) && !defined(_WIN32)
+            CHECK(strstr(text, "The game starts anyway."), "Linux warning does not explain that startup continues");
             CHECK(strstr(text, "unresponsive") && strstr(text, "not a replacement for RAM"), "missing paging caution");
             CHECK(strstr(text, "16 GB") && strstr(text, "13 GiB"), "missing RAM guidance");
+#else
+            CHECK(strstr(text, "It starts now anyway."), "legacy warning does not explain that startup continues");
+            CHECK(strstr(text, "the page file on Windows") && strstr(text, "two together"), "missing commit-limit guidance");
+            CHECK(!strstr(text, "unresponsive") && !strstr(text, "not a replacement for RAM") &&
+                  !strstr(text, "13 GiB"), "Linux-only guidance in the legacy warning");
 #endif
+        } else {
+            CHECK(!text[0], "a no-warning case wrote warning text");
         }
         for (int quiet = 0; quiet < 2; ++quiet) {
             boxes = 0; last_log[0] = box_text[0] = 0;
@@ -157,19 +175,24 @@ def main():
         raise SystemExit("FAIL: host/hos_main.c reads Linux's memory without <sys/sysinfo.h>")
     define = next(line for line in src.splitlines() if line.startswith("#define HOS_MEMORY_NEEDED_MB"))
     code = "\n".join((define, block(src, "static int memory_notice_text("), block(src, "static void memory_notice(void) {")))
+    variants = [("native", [])]
+    if sys.platform.startswith("linux"):
+        variants.append(("windows-policy-on-linux", ["-DTEST_WINDOWS_POLICY"]))
     with tempfile.TemporaryDirectory(prefix="low-memory-") as tmp:
-        c, exe = Path(tmp) / "fixture.c", Path(tmp) / "fixture.exe"
-        c.write_text(FIXTURE.replace("@@CODE@@", code), encoding="utf-8")
-        command = [args.cc, "-x", "c", "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-O1",
-                   "-I", str(ROOT / "gpu" / "vk" / "compat"), str(c), "-o", str(exe)]
-        r = subprocess.run(command, capture_output=True, text=True, timeout=120)
-        if r.returncode:
-            print(r.stdout + r.stderr)
-            raise SystemExit("the fixture did not build")
-        r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
-        print(r.stdout, end="")
-        if r.returncode:
-            raise SystemExit("FAIL: memory_notice")
+        for label, flags in variants:
+            c, exe = Path(tmp) / (label + ".c"), Path(tmp) / (label + ".exe")
+            c.write_text(FIXTURE.replace("@@CODE@@", code), encoding="utf-8")
+            command = [args.cc, "-x", "c", "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-O1", *flags,
+                       "-I", str(ROOT / "gpu" / "vk" / "compat"), str(c), "-o", str(exe)]
+            r = subprocess.run(command, capture_output=True, text=True, timeout=120)
+            if r.returncode:
+                print(r.stdout + r.stderr)
+                raise SystemExit("the fixture did not build: " + label)
+            r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+            print(label + (" (not Windows execution)" if flags else "") + ":")
+            print(r.stdout, end="")
+            if r.returncode:
+                raise SystemExit("FAIL: memory_notice " + label)
     print("PASS: production low-memory decisions, exact counts, message, headless and boot wiring")
 
 
