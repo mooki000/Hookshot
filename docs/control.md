@@ -23,9 +23,9 @@ It is off unless `HOS_CONTROL` is set. When it is on, the log says so once:
 `control: listening on <path> (HOS_CONTROL: ...)`. On Windows the value is a named pipe, `\\.\pipe\<name>`; a bare name
 gets that prefix.
 
-`hookshot_ctl.py launch <game folder>` starts a game folder this way. It makes a run folder of its own (mode 0700) and
-puts the socket (`control.sock`), the log (`log.txt`) and the screenshots (`shots/`) there. It waits until the bridge
-answers, then prints the socket's path.
+`hookshot_ctl.py launch <game folder>` starts a game folder this way. It makes a persistent run folder (mode 0700 on
+Linux) with a manifest, `log.txt` and `shots/`. The socket stays in a separate short private folder; the manifest records
+it. The default waits until the bridge answers, then prints the socket's path. See [Sessions](#sessions).
 
 ## Security
 
@@ -117,6 +117,12 @@ controller once a frame, so `"frames": 8` is 8 game frames. The bridge's buttons
 axes it sets, its sticks replace a script's (`HOS_INPUT_SCRIPT`); the player's own pad, keys and mouse still count after
 it, the larger deflection winning, unless the input is exclusive. `"exclusive": true` keeps the player's own pad, keyboard and mouse out from
 the request until the input ends (compare `HOS_INPUT_EXCLUSIVE`).
+
+The client's `press` and `stick` take frame counts unchanged. For `sequence --hos`, it converts seconds (`at`) and
+milliseconds (hold) at **60 game presents per second, rounding to the nearest frame with halves up**, and clamps a
+positive hold to at least one frame, just as the bridge's HOS-script parser does. The fake receives those integer
+`steps`, not a seconds/ms string: `0.025:A/25,1:B/1` becomes `(at=2, frames=2), (at=60, frames=1)`.
+These are game-clock times, not a promise of elapsed wall time; the bridge still accepts HOS scripts from other clients.
 
 Buttons use the names `HOS_INPUT_SCRIPT` uses: `A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN`. The stick
 directions are `LUP LDOWN LLEFT LRIGHT RUP RDOWN RLEFT RRIGHT`, and `LX= LY= RX= RY=` set an axis from -32767 to 32767
@@ -334,7 +340,8 @@ The client:
 - `launch --save FOLDER [--slot NN]` copies a save folder (`account.sav`, `option.sav`, `slot_NN/`) into the run's
   data folder before the game starts: `--data`, or `data/` in the run folder. With `--slot` (`03` or `slot_03`) only
   that slot is copied, so Continue loads it. The source is only read. A destination that already holds saves is
-  refused. Linux only (on Windows the game keeps its saves in its own folder).
+  refused. On Windows, use `--profile test` or an explicit `--user DIR`: the game supports `--user` on both platforms.
+  With either, the copy goes into `DIR/save/<user id>` instead of the Linux data folder.
 
 ## Guest memory
 
@@ -434,6 +441,119 @@ exists but its game is missing it refuses: the root executable is the Builder la
 `--exe FILE` selects a development executable. `--image FILE`, `--romfs DIR` and `--user DIR` pass the game's own
 arguments (the image is positional), on both platforms; see [the runtime parser](../host/hos_main.c) and
 [the game's command line](../readme.md#running-the-game-from-the-command-line).
+
+### Sessions
+
+The default profile keeps the existing window, audio, inherited environment and save-location choices. A launch now
+also leaves a run folder under `work/control-runs` in the caller's folder. `--root DIR` chooses that parent; `--run DIR`
+chooses one new or empty folder. A non-empty folder is never reused. The short socket folder is independent of the run
+path's length. `--json launch` still returns `socket`, `pid`, `run` and `log`, now with the rest of the manifest.
+
+```sh
+python -I scripts/hookshot_ctl.py --json launch GAME_DIR --profile test --run work/my-run --ready present
+python -I scripts/hookshot_ctl.py runs work/control-runs
+python -I scripts/hookshot_ctl.py --run work/my-run show
+python -I scripts/hookshot_ctl.py --run work/my-run press A --frames 8
+python -I scripts/hookshot_ctl.py --run work/my-run shot
+python -I scripts/hookshot_ctl.py --run work/my-run stop --timeout 10
+```
+
+`--run DIR` re-attaches from any later invocation, without depending on the first client's memory or environment.
+It is an alternative to `--sock`. The client checks the game's pid **and birth identity** before connecting. A small
+background instance of the same script remains the parent of the game, waits for it, and records its actual exit code,
+even after the launching shell or a server goes away. `finish` marks an orphaned run whose game and owner are both gone;
+it does not invent an exit code. `show` and `log` work after exit without connecting to the game.
+
+`--profile test` sets `HOS_HEADLESS=1`, `HOS_AUDIO=0` and `HOS_ENV_FILE` to the run's owned empty file, and passes
+`--user <run>/user`. These profile choices win over conflicting `--env` entries. The runtime reads that file
+**instead of** the ambient `hookshot_env.txt` (`load_hookshot_env` in `host/hos_main.c`), not as another layer.
+The profile starts fresh, or `--save FOLDER [--slot NN]` makes a plain-file copy using the existing source checks.
+It refuses `--data` and `--user`: neither can redirect a test run onto the source save. The same explicit runtime
+`--user` argument makes isolation possible on Windows; the old Windows `--save` without it still refuses.
+Inherited environment, the game's own options and driver caches are not isolated by this profile.
+
+Inputs sent **by run folder** default to `exclusive:true` for test runs; `--no-exclusive` opts out. This covers each
+queued input's delay and hold, not the gaps between requests or an unrelated `--sock` client. Raw JSON is sent as given.
+It is not a run-long physical-device lock. No new game command or native input policy is added.
+
+`--ready bridge|present|play` selects what launch waits for:
+
+| Level | Required status |
+|---|---|
+| `bridge` (default) | A successful `status` reply |
+| `present` | A successful reply with at least one game-present frame |
+| `play` | A presented frame, `state=play`, `stalled=false`, and known-false `game.event` and `game.loading` |
+
+`play` does not press through the title or load a save for you. Another `--run` invocation can send inputs while
+launch waits, or the game can have an explicit input script. The state is still the bridge's draw-count heuristic;
+main's `game` snapshot has no sample timestamp, so this is **not a freshness guarantee**. `--timeout` bounds readiness
+after admission. A failed start or readiness timeout terminates and reaps the game it started, leaves a failed
+manifest and log, and explains the last condition. It never silently abandons a timed-out game.
+
+`stop` asks the original owner to send the bridge's `quit`, then waits for the child process to exit. A quit timeout
+returns status 3 with `process_exited:false`; the game stays owned and running. Only `--terminate` allows the original
+owner to terminate its child after that timeout (and kill it after five more seconds). The manifest reports the method
+and actual exit code. An attaching client never sends an OS signal to a pid from disk; if the owner is gone it refuses
+forced stopping. There is no command to adopt an arbitrary `--sock` game as an owned process.
+The bridge's `game_quit` flushes the log and exits, **but has no save-in-progress barrier**. `save_drain` is
+`unsupported`, or `unknown` for an observed orphan exit, never `clean`. A copied save is not a validated checkpoint.
+
+For a development build, `--cwd DIR --image FILE --romfs DIR --user DIR` separates working/cache files from the image
+and user files. `--cwd` needs `--image`: without an image argument the runtime changes back to the game folder.
+`--wrapper '["admission-program","argument"]'` puts an optional command before the **lifetime supervisor**, not before
+the short-lived launch client. It must run the remaining argv unchanged and wait for it, so its admission remains held
+until the game exits. Queue time is separate from the readiness timeout. The wrapper supplies machine policy and any
+wall-time bound; the client contains no GPU locks or machine-specific paths. No shell parses the JSON argv.
+
+### Run log
+
+```sh
+python -I scripts/hookshot_ctl.py --json --run work/my-run log --lines 40
+python -I scripts/hookshot_ctl.py --json --run work/my-run log --since 1234
+python -I scripts/hookshot_ctl.py --json --run work/my-run log --since 1234 --expect 'some new line' --timeout 10
+python -I scripts/hookshot_ctl.py --run work/my-run log --since 1234 --expect 'input.*completed' --regex
+```
+
+The cursor is a **byte offset**, returned with `text`, `start`, `more` and `truncated`; keep it before sending the input
+whose log you want to observe. `--expect` requires `--since` and cannot match text before it. Matching is case-sensitive;
+`--regex` uses Python regular expressions, supplied by the trusted caller. Read/output defaults to 65,536 bytes
+(`--bytes`, at most 1 MiB); the tail is at most 10,000 lines. `more` means continue at `cursor`; `truncated` means the
+tail's byte bound omitted older text. Very long matches beyond the bounded search window are not promised. A cursor
+past EOF refuses, rather than treating an old cursor as a new file. No bridge log subscription is needed.
+
+### Manifest version 1
+
+`manifest.json` is UTF-8 JSON, atomically replaced under `manifest.lock`. Consumers reject unknown schema versions.
+Paths are absolute. Times are UTC ISO-8601; unavailable values are JSON `null`. Only explicitly set environment names
+and values are recorded, not the inherited environment (explicit `--env` values can themselves be private).
+
+| Field | Meaning |
+|---|---|
+| `schema_version`, `client_version` | Schema integer `1`; client session-format release string `1` |
+| `run`, `game`, `executable`, `command`, `cwd` | Run folder, game folder, resolved executable, exact game argv, working folder |
+| `environment`, `profile` | Effective environment additions/overrides made by the client; `default` or `test` |
+| `user`, `save_source`, `slot` | Effective user folder, copied source or null, selected slot or null |
+| `socket`, `socket_dir`, `log` | Unix socket or Windows pipe name, allocated socket folder or null, run log |
+| `pid`, `process_start` | Game pid and birth identity: Linux boot ID/start ticks, Windows process-creation FILETIME |
+| `owner` | Original supervisor's `pid` and `birth` identity; not authority to signal an arbitrary process |
+| `created_at`, `started_at`, `ended_at` | Run creation, game start and final receipt times |
+| `state` | `queued`, `starting`, `running`, `stopping`, `finished` or `failed` |
+| `ready`, `ready_timeout`, `ready_reply` | Requested level, seconds after admission, observed successful status when available |
+| `wrapper` | Optional lifetime admission argv prefix |
+| `exit_code`, `process_exited`, `stop_method`, `save_drain` | Child receipt and honest shutdown result; a signal is a negative exit code on Linux |
+| `artifacts` | Acknowledged shots: `kind`, `path`, game `frame`, renderer `present`, `width`, `height` |
+| `error`, `error_code` | Failure explanation and client exit category, when available |
+| `stop_request`, `stop_result` | Owner mailbox and last reply, matched by `id`; reply has `method`, `process_exited`, `forced`, `save_drain`, and any error |
+
+**Trust:** the client starts programs and writes files with the user's authority. A run folder is not a sandbox.
+Do not load manifests, wrapper commands or executable paths from an untrusted caller. Use an owned game copy if options
+or cache writes must not affect ordinary play.
+
+The standard-library API for a future thin server is `start_session(...)`, `list_runs(root)`, `Session.attach(folder)`,
+`Session.info()`, `Session.request(cmd, timeout=None, **args)`, `Session.log(...)`, `Session.expect_log(...)`,
+`Session.stop(timeout=10, terminate=False)` and `Session.finish()`. `Session.connect()` returns a separate `Bridge`
+for streaming; serialize requests on a connection, and keep subscriptions on their own connection.
+
 
 ## Known limits
 
