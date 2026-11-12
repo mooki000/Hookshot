@@ -87,9 +87,10 @@ int main(int argc, char** argv) {
     in.user = argv[5];
     in.windows = std::string(argv[6]) == "1";
     in.hostname = "private-machine";
-    const std::string private_text = in.home + "/example " + in.user + " private-machine 192.168.42.9 fd00::1234 user@example.org";
+    const std::string private_text = in.home + "/example " + in.user +
+        " private-machine 192.168.42.9 fd00::1234 fe80::1%eth0 2001:db8:0:1:2:3:4:5 user@example.org";
     in.system_details = "kernel: Fixture 1.0\nFilesystem: btrfs\nRotational: no\nRAM in use: 1024 KiB\nSwap in use: 16 KiB\n"
-                        "Power: battery\nSteam Deck hardware: yes\nCompositor: gamescope\n" + private_text + "\n";
+                        "Power: battery\nSteam Deck hardware: yes\nCompositor: gamescope\nClock: 12:34:56\n" + private_text + "\n";
     in.displays = "Known desktop size: 1280x800\nrefresh_mHz: 60000\nHDR: unknown\nSwapchain: 1280x800\nPresent mode: FIFO\n" + private_text;
     in.software = "layer libraries mapped into the process: libVkLayer_fixture.so\n" + private_text;
     in.situation = "Last published age: child\n" + private_text;
@@ -205,7 +206,7 @@ def no_private(files, home, user, game):
         for needle in (home, home.replace("\\", "/"), game.rstrip("\\/")):
             check(needle.lower() not in text.lower(), "%s names %s" % (name, needle))
         check(not re.search(r"[/\\]" + re.escape(user) + r"(?![A-Za-z0-9._-])", text, re.I), "%s names the user as a folder" % name)
-        for needle in (user, "private-machine", "192.168.42.9", "fd00::1234", "user@example.org"):
+        for needle in (user, "private-machine", "192.168.42.9", "fd00::1234", "fe80::1%eth0", "2001:db8:0:1:2:3:4:5", "user@example.org"):
             check(not re.search(r"(?<![A-Za-z0-9._-])" + re.escape(needle) + r"(?![A-Za-z0-9._-])", unquote(text), re.I),
                   "%s holds private token %s" % (name, needle))
 
@@ -377,6 +378,7 @@ def main():
         check(set(p.name for p in (game_path / "bug-reports").iterdir()) == {folder.name}, "more than the report's folder")
         no_private(files, home, user, game)
         bundle(folder, home, user, game)
+        check("Clock: 12:34:56" in files["system.txt"], "ordinary clock time redacted as IPv6")
         for name, value in {"system.txt": "Rotational: no", "display.txt": "1280x800", "software.txt": "libVkLayer_fixture.so",
                             "game-state.txt": "Last published age: child", "area-history.txt": "HyruleField_Child",
                             "input.txt": "Stick deadzone: 10%", "performance.txt": "1% low_fps"}.items():
@@ -623,6 +625,8 @@ def main():
             result = game_path / folders[0]
             meta = bundle(result, home, user, game)
             check(f"slot_00/progress.sav: {len(payload)} bytes" in (result / "save-metadata.txt").read_text(encoding="utf-8"), "save metadata")
+            check(re.search(r"last written \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} local time",
+                            (result / "save-metadata.txt").read_text(encoding="utf-8")), "save modification clock time was lost")
             check("must not be shared" in (result / "report.txt").read_text(encoding="utf-8"), "local-save warning")
             check((result / "save/slot_00/progress.sav").exists() == (mode == "save"), "save opt-in boundary")
             with zipfile.ZipFile(result / "report.zip") as zipped:

@@ -159,6 +159,8 @@ Linux filesystem type comes from `statfs`, including Btrfs subvolumes whose devi
 the mount table's. Power readings require system scope: a mouse/controller battery is not the
 machine's battery. Detailed `vk: VRAM:`/`vk: textures:` lines are retained separately from the
 short status line, so that line cannot hide the texture count and effective budget.
+Text redaction keeps ordinary `HH:MM:SS` modification times; an IPv6 address needs compressed
+groups or a full group count. Unknown cached display sizes are written as unknown, not `0x0`.
 
 Reports publish `manifest.json` last: `schema: 1`, `report_id`, `when`, and `files` entries with
 relative `name`, byte `size`, `status`, `reason`, `shareable`, and optional `incident_id`.

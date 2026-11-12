@@ -2914,7 +2914,10 @@ void bug_report_snapshot(bug_report::Inputs& in) {
     in.displays += "On Linux the size is the primary desktop; refresh may describe a different window output.\n"
                    "Other monitor sizes/refresh/HDR states: not exposed by the current host interface.\n";
     const auto sizes = present_sizes.load(std::memory_order_relaxed);
-    in.displays += "Last game picture: " + std::to_string(sizes >> 48) + "x" + std::to_string((sizes >> 32) & 65535) + "\n";
+    const unsigned picture_w = (unsigned)(sizes >> 48), picture_h = (unsigned)((sizes >> 32) & 65535);
+    in.displays += picture_w && picture_h ?
+        "Last game picture: " + std::to_string(picture_w) + "x" + std::to_string(picture_h) + "\n" :
+        "Last game picture: unknown (no published present size)\n";
     if (dev.offscreen) in.displays += "Swapchain: none (windowless); HDR display state: unknown\n";
     else in.displays += "Swapchain: " + std::to_string(dev.swap_extent.width) + "x" + std::to_string(dev.swap_extent.height) +
         "\nPresent mode (VkPresentModeKHR): " + std::to_string((int)dev.swap_mode) +

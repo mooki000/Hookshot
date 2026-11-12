@@ -20,6 +20,7 @@
 #include <regex>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <mutex>
 #include <thread>
 #include <sys/stat.h>
@@ -197,8 +198,11 @@ std::string clean(const std::string& text, const Inputs& in) {
         const bool ip4 = sscanf(token.c_str(), "%u.%u.%u.%u%n", &a, &b, &c, &d, &used) == 4 &&
                          a < 256 && b < 256 && c < 256 && d < 256 && used > 0 &&
                          ((size_t)used == token.size() || token[(size_t)used] == ':');
-        const bool ip6 = std::count(token.begin(), token.end(), ':') >= 2 &&
-                        token.find_first_not_of("0123456789abcdefABCDEF:.%") == std::string::npos;
+        // Two colons alone can be an ordinary HH:MM:SS timestamp. IPv6 either
+        // compresses groups with "::" or spells all eight groups; a zone follows %.
+        const std::string_view address = std::string_view(token).substr(0, token.find('%'));
+        const bool ip6 = (address.find("::") != std::string::npos || std::count(address.begin(), address.end(), ':') >= 7) &&
+                        address.find_first_not_of("0123456789abcdefABCDEF:.") == std::string::npos;
         const auto dot = token.rfind('.');
         const bool domain = dot != std::string::npos && dot + 1 < token.size() &&
                             (lower(token.substr(dot + 1)) == "local" || lower(token.substr(dot + 1)) == "lan" ||
@@ -985,7 +989,9 @@ std::string write(const Inputs& in) {
                 detail += "; this log holds the game's own crash lines, including bytes of memory near three registers, as hookshot_log.txt itself does";
             items.push_back({name, "included", detail, "", bytes.size(), true});
             entries.push_back({name, std::move(bytes)});
-        } else omit(name, source.empty() ? "log is not a file (terminal or pipe)" : "log could not be read or copied", !source.empty());
+        } else omit(name, source.empty() ? (!strcmp(name, "hookshot_log.txt") ?
+            "this run's log is not a file (terminal or pipe)" : "no earlier/matching log file found") :
+            "log could not be read or copied", !source.empty());
         return facts;
     };
     LogFacts now, last;
