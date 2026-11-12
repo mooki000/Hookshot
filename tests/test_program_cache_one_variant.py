@@ -3,7 +3,8 @@
 The production cache loader (vk_progcache.cpp: program_cache_save, program_cache_read, program_cache_read_light,
 program_cache_complete, program_cache_load), cut out of the source and compiled with a made-up Vulkan and a counted fread
 (tests/program_cache_one_variant_test.cpp), run both ways: RX_VK_LOAD_ALL_VARIANTS=1 (every kept variant read whole and
-made, as before) and the default.
+made, as before) and the default. Records are uncompressed: the real payload helper handles them, while the fixture's
+zstd entry points fail if called (no compression library is linked).
 
 - the programs the load gives are the same either way, in the same order, but for their modules;
 - for several bound textures the pick's loop takes the same variant either way (the first that fits, in the file's order);
@@ -47,10 +48,12 @@ def main():
     structs = "\n".join(block(header, m) + ";" for m in ("struct Stage {", "struct Program {"))
     structs += "\n" + block(cache_h, "struct DiskRecord {") + ";"
     functions = "\n".join(block(shader, m) for m in ("VkShaderModule make_module(", "uint64_t answers_hash(", "bool answers_fit("))
+    functions += "\n" + cache[cache.index("constexpr uint32_t kCompressedKind"):cache.index("void idx_put(")]
     functions += "\n" + block(cache, "void idx_put(")
     functions += "\n" + block(cache_h, "struct Reader {") + ";\n"
     functions += cache[cache.index("void put_bytes("):cache.index("void program_cache_save(")]
-    functions += block(cache, "void program_cache_save(") + "\n" + block(cache, "void program_cache_read(") + "\n"
+    functions += block(cache, "void program_cache_save(") + "\n"
+    functions += block(cache, "bool program_cache_payload(") + "\n" + block(cache, "void program_cache_read(") + "\n"
     functions += cache[cache.index("namespace {\nstd::mutex light_mu;"):cache.index("/// (shader_mu held) the kept variants of key go to its list")]
     functions += block(cache, "void program_cache_load(").replace("bool keep) {", "bool keep = false) {")
     # the dispatch: a program is made whole before its module is used, in both places

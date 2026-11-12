@@ -77,6 +77,16 @@ void logf(const char*, ...) {}
 bool whole_variants = false;   // (RX_VK_LOAD_ALL_VARIANTS=1: the way before)
 bool env_on(const char* name) { return !std::strcmp(name, "RX_VK_LOAD_ALL_VARIANTS") && whole_variants; }
 bool disk_on = true, disk_listing = true;
+bool disk_zstd = false;   // (these checks compare whole and light reads of uncompressed records)
+// Only the zstd library is absent: keep the real payload helper, and fail rather than pretend to unpack a record.
+[[noreturn]] static void unexpected_zstd() {
+    std::fprintf(stderr, "FAIL: the uncompressed one-variant fixture called zstd\n");
+    std::exit(1);
+}
+size_t ZSTD_compressBound(size_t) { unexpected_zstd(); }
+size_t ZSTD_compress(void*, size_t, const void*, size_t, int) { unexpected_zstd(); }
+size_t ZSTD_decompress(void*, size_t, const void*, size_t) { unexpected_zstd(); }
+unsigned ZSTD_isError(size_t) { unexpected_zstd(); }
 FILE* disk_in = nullptr;
 FILE* disk_out = nullptr;
 FILE* disk_idx = nullptr;
