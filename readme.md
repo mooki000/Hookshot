@@ -442,6 +442,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   reports a single 16:9 primary monitor. For three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
   that spans all three. Both render at full size: 7680x1440 has 5120x2160's pixels, the most a wide picture takes.
   For one run, set `HOS_OUTPUT_RES` to a size, such as `HOS_OUTPUT_RES=3840x2160`.
+- **Ultrawide menus:** the centred modes keep the pause and map menus in the middle 16:9, with blurred sides or
+  black bars. Loading fades still cover the whole picture so the scene is hidden while it loads. The loading icon
+  shares that full-width layout and is stretched on an ultrawide screen, as in Full width mode.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
   picture, set the Output resolution to your screen's, and the row shows "Not needed (window = output)". It and
   **Sharpness** also work when Frame generation is Off.
