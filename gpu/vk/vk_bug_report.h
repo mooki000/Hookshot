@@ -6,6 +6,10 @@
 // their paths, and a picture of the game's frame without the menu (vk_replay.cpp's shot_ask takes it at its next present). Nothing is
 // sent anywhere: the player attaches the files to an issue. What is read and how it is written is here, apart from Vulkan
 // and the menu, for tests/test_bug_report.py.
+// Extended reports also list each attachment, omission and failure in report.txt and manifest.json, and package the
+// shareable files in report.zip. Explicitly requested local save copies stay separate and must never be shared.
+// The menu snapshots its existing state; a worker collects bounded diagnostics and redacts text. No sender or new
+// host/renderer interface is added, and the collector does not read game memory directly.
 #pragma once
 
 #include <cstdint>
@@ -16,6 +20,9 @@
 namespace mkwvk::bug_report {
 
 /// What a report is made of: the menu's part (version, gpu, options, game_dir) and this process's (fill_here)
+struct Frame {
+    double seconds = 0, milliseconds = 0, gpu_ms = 0;
+};
 struct Inputs {
     std::string version;   // HOOKSHOT_VERSION, as the log's first line has it
     std::string gpu;       // the device the game runs on and its driver, as the form asks: "NVIDIA GeForce RTX 4090, NVIDIA 580.95.05"
@@ -25,6 +32,14 @@ struct Inputs {
     std::string game_dir;  // the game folder, its separator at the end: the logs are there, and the report's folder goes there
     std::string current_log;   // the file this run logs to (stderr), "" when that is no file (a terminal, a pipe)
     std::string home, user;    // taken out of the logs: the home folder and the user's name
+    std::string hostname;      // removed everywhere, not collected as a diagnostic
+    std::string displays, situation, performance, input;
+    std::vector<Frame> frames; // existing history only; never enables a measurement
+    std::string save_root;     // private path from the existing save mount log, never printed
+    std::string save_slot;     // RX_VK_BUG_REPORT_SAVE=slot_XX; LOCAL ONLY, never shared or zipped
+    bool previous_run = false; // pending record at start: no current-run picture or measurements
+    bool collect_process = false; // fill_here enables OS probes; authored fixtures supply text
+    std::string system_details, software;
     bool windows = false;      // paths as Windows writes them: either slash, and case does not matter
     std::time_t now = 0;
     int picture_wait_ms = 3000;   // how long the report waits for its picture before it goes without one
@@ -45,6 +60,13 @@ std::string redact(const std::string& line, const std::string& home, const std::
 /// Writes a report: its folder, relative to the game folder ("bug-reports/2026-11-10_22-41-05"), or "" when the folder could
 /// not be made. Asks for the picture (ask_picture) and waits for it (picture_wait_ms)
 std::string write(const Inputs& in);
+/// Starts a previous-run report only when valid pending records exist. No files without them.
+bool recover(Inputs in);
+/// Pure parsers shared by process collection and authored fixtures.
+std::string library_names(const std::string& text, bool maps);
+std::string memory_fields(const std::string& text, bool process);
+const char* filesystem_name(uint64_t type);
+bool system_power_supply(const std::string& scope);
 /// write() on a thread of its own: false while one is still being written
 bool start(Inputs in);
 enum State { kIdle, kSaving, kSaved, kFailed };

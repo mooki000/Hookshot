@@ -40,6 +40,7 @@
 #include "vk_dlss.h"
 #include "vk_framegen.h"   // (Frame generation by: who makes the frames now, framegen_maker)
 #include "vk_bug_report.h"   // (the Gameplay tab's Bug report: what it writes, and how)
+#include "vk_progcache.h"   // (Bug report: atomic cache-hit/translation counters, never the live cache containers)
 #include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
@@ -2943,6 +2944,92 @@ bool bug_report_picture(const char* path, uint64_t ticket) {
     return shot_ask_next(path, [](void* asked, int64_t, int ok) { bug_report::picture_written((uint64_t)(uintptr_t)asked, ok != 0); },
                          (void*)(uintptr_t)ticket) != 0;
 }
+/// Called under menu_mu at the report action. FPS history has ring_mu, preparation has startup_mu, and the counters are
+/// independent atomic samples: this is not one atomic snapshot of all subsystems. dev.swap_extent, dev.swap_mode and dev.hdr
+/// are plain fields, not locked here. The windowed menu_tick call is inside present_image's present_image_mu, which also
+/// serializes runtime swapchain recreation (including present_commit/present_out). The other menu_tick call is headless and
+/// skips these swapchain reads. Keep that caller serialization; never call this snapshot from the report worker.
+void bug_report_snapshot(bug_report::Inputs& in) {
+    fps_stats::Frame history[512];
+    const int count = fps_recent(history, (int)std::size(history));
+    const int64_t now = fps_clock();
+    in.frames.reserve((size_t)count);
+    for (int i = 0; i < count; ++i)
+        in.frames.push_back({(history[i].at_ns - now) / 1e9, history[i].ms, history[i].gpu_ms});
+    in.performance = "FPS history level: " + std::string(fps_stats::level_name(opts.show_fps)) +
+        "\nHistory may contain older samples after the counter was disabled; CSV times are relative to this report.\n";
+    uint64_t used = 0, budget = 0;
+    const bool allowance = dev.device && vram_usage(&used, &budget);
+    in.performance += "Device-local allocator/driver usage_bytes: " + std::to_string(used) +
+        "\nDriver budget_bytes: " + (allowance ? std::to_string(budget) : "unknown") +
+        "\nConfigured texture cap_MiB: " + std::to_string(opts.vram_mb) +
+        " (0: Auto; not the effective eviction budget)\nEffective texture use/budget: last existing log line below, if present.\n" +
+        "Shader translations: " + std::to_string(shader_translated()) +
+        "\nProgram variants loaded from cache: " + std::to_string(st_cache_hits.load(std::memory_order_relaxed)) + "\n";
+    int64_t links = 0, hits = 0, cold = 0, built = 0;
+    double link_ms = 0, build_ms = 0;
+    if (draw_stats4(&links, &link_ms, &hits, &cold, &built, &build_ms))
+        in.performance += "Pipeline library links/hits/cold/built: " + std::to_string(links) + "/" + std::to_string(hits) +
+            "/" + std::to_string(cold) + "/" + std::to_string(built) + "\n";
+    else in.performance += "Pipeline libraries: not enabled; other cache counts use existing log lines.\n";
+    {
+        std::lock_guard lock(startup_mu);
+        in.performance += "Preparation screen visible: " + std::string(startup_on.load() ? "yes" : "no") +
+            "\nLast preparation view: " + startup.step + " " + startup.title + " " + startup.pct + " " + startup.left +
+            "\nA hidden screen is not proof that all preparation/background work completed.\n";
+    }
+    uint32_t w = 0, h = 0;
+    const bool screen = screen_size(&w, &h);
+    in.displays = "Known desktop size: " + (screen ? std::to_string(w) + "x" + std::to_string(h) : "unknown") +
+        "\nWindow display refresh_mHz: " + std::to_string(display_refresh_mhz()) + " (0: unknown)\n";
+    in.displays += "On Linux the size is the primary desktop; refresh may describe a different window output.\n"
+                   "Other monitor sizes/refresh/HDR states: not exposed by the current host interface.\n";
+    const auto sizes = present_sizes.load(std::memory_order_relaxed);
+    const unsigned picture_w = (unsigned)(sizes >> 48), picture_h = (unsigned)((sizes >> 32) & 65535);
+    in.displays += picture_w && picture_h ?
+        "Last game picture: " + std::to_string(picture_w) + "x" + std::to_string(picture_h) + "\n" :
+        "Last game picture: unknown (no published present size)\n";
+    if (dev.offscreen) in.displays += "Swapchain: none (windowless); HDR display state: unknown\n";
+    else in.displays += "Swapchain: " + std::to_string(dev.swap_extent.width) + "x" + std::to_string(dev.swap_extent.height) +
+        "\nPresent mode (VkPresentModeKHR): " + std::to_string((int)dev.swap_mode) +
+        "\nSelected HDR10 swapchain: " + (dev.hdr ? "yes" : "no") + " (not the monitor's capability or OS toggle)\n";
+    const int age = link_age.load(std::memory_order_relaxed);
+    in.situation = "Last published age: " + std::string(age == 0 ? "child" : age == 1 ? "adult" : "unknown") + "\n";
+    in.input = "Layout preset: " + std::string(tx_pad_layout(detect_pad_layout())) +
+        "\nStick deadzone: " + tx_stick_dead_zone(opts.stick_dead_zone) + "\n";
+    // The host offers current bindings but no default getter. Keep these diagnostic
+    // baselines in step with binds_default; test_bug_report checks the source tables.
+    static const signed char pad_default[HOS_SW_N] = {
+        HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
+        HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
+        HOS_PAD_RIGHT, HOS_PAD_DOWN};
+    static const unsigned char key_default[HOS_KEY_N][2] = {
+        {'E'}, {VK_SHIFT}, {VK_SPACE}, {VK_LBUTTON}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z', VK_RBUTTON}, {'X', 'F'},
+        {VK_TAB, VK_RETURN}, {'M'}, {'1'}, {'2'}, {'3'}, {'4'}, {'W'}, {'S'}, {'A'}, {'D'}, {VK_UP, 'I'}, {VK_DOWN, 'K'},
+        {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}, {0}, {0}, {0}, {0}, {0}};
+    bool changed = false;
+    if (host && host->binding) for (const auto& control : controls) {
+        const int b = control.button;
+        for (int slot = 0; slot < 2; ++slot) {
+            const int key = host->binding(HOS_BIND_KEY, b, slot);
+            if (key != key_default[b][slot]) {
+                in.input += std::string(control.name) + " key " + std::to_string(slot + 1) + ": " + key_name(key) +
+                    " (default code " + std::to_string(key_default[b][slot]) + ")\n";
+                changed = true;
+            }
+            if (b >= HOS_KEY_MOVE_UP && b <= HOS_KEY_CAM_RIGHT) continue;
+            const int pad = host->binding(HOS_BIND_PAD, b, slot), was = slot == 0 && b < HOS_SW_N ? pad_default[b] : -1;
+            if (pad != was) {
+                in.input += std::string(control.name) + " pad " + std::to_string(slot + 1) + ": " + pad_name(pad) +
+                    " (default position " + std::to_string(was) + ")\n";
+                changed = true;
+            }
+        }
+    }
+    if (!host || !host->binding) in.input += "Bindings: unavailable\n";
+    else if (!changed) in.input += "Bindings: all at defaults\n";
+    in.input += "Motion/input option changes are in settings.txt; no input event history is collected.\n";
+}
 /// A or Enter on the Bug report: the report gathered here (the menu's part) and written on a thread of its own
 void bug_report_save() {
     if (bug_report::state() == bug_report::kSaving) return;
@@ -2956,6 +3043,7 @@ void bug_report_save() {
     in.game_dir = ini.substr(0, ini.find_last_of("\\/") + 1);
     in.log = [](const char* line) { logf("%s", line); };
     in.ask_picture = bug_report_picture;
+    bug_report_snapshot(in);
     logf("menu: bug report asked for");
     bug_report::start(std::move(in));
 }
@@ -4150,6 +4238,14 @@ void menu_init() {
     }
     outputs_sync();   // (the Aspect ratio follows the size read)
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
+    // A host record from the last run can be useful before a Vulkan device exists.
+    // recover() does no collection and writes nothing when there are no pending records.
+    bug_report::Inputs report;
+    report.version = HOOKSHOT_VERSION;
+    const std::string report_ini = ini_path();
+    report.game_dir = report_ini.substr(0, report_ini.find_last_of("\\/") + 1);
+    report.log = [](const char* line) { logf("%s", line); };
+    bug_report::recover(std::move(report));
 }
 
 /// (hookshot) The Quality preset "Auto (this PC)", once the card is chosen (vk_main.cpp pick_device): the profile auto_settings.h

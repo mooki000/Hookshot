@@ -113,6 +113,7 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
 | `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
 | `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |
+| `RX_VK_BUG_REPORT_SAVE=slot_XX` | Opt-in LOCAL-only copy of that explicitly selected save slot when Gameplay → Bug report is pressed. The loaded slot is not known. Never zipped or shared; invalid/missing slots are refused. Without it the report reads only save metadata |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
 | `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value: the WebGPU renderer, when the exe was built with one |
 | `HOS_GPU_ALLOC_RETRY=0` | A model's material-block allocations from a full heap (the OptimizeChangeBank thread's two CPU buffers and two GPU-memory calls in f_804566e0) not tried in the heap's parents, as shipped (`host/oot_heap_retry.c`, issue 1697) |
@@ -146,6 +147,42 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_PASS_TRACE=1` | The passes of the last frames, logged at a flash or a dark frame (`RX_VK_PASS_TRACE_AT=<n>`: every n-th present) |
 | `RX_VK_PROBE=1` or `2` | The centre texel after every pass: `probe_<frame>.txt` at a flash (1), or `probe_all_<n>.txt` at speed (2); `python -I scripts/probe.py` reads them |
 | `RX_VK_DUMP_FAILED=<dir>` | The native code of every program that does not translate, for `nx2/lower_test.py` (game data: keep it local) |
+
+The Gameplay **Bug report** row reuses the existing next-frame capture, not `RX_VK_SHOTS`.
+Its pictures omit the Insert menu and final display/HDR processing. It always asks for a second
+frame 250 ms later, with one three-second deadline for both; it has no black/loading classifier.
+Its CSV copies up to 512 raw samples under `vk_fps.cpp`'s existing `ring_mu`; it does not enable the
+counter or add a lock/clock read to normal play. GPU timing requires previously collected Breakdown
+samples. The 1% low is 1000 divided by the mean of the slowest `ceil(N/100)` positive intervals.
+Headless samples are present-thread CPU intervals, not scanout or display latency.
+Linux filesystem type comes from `statfs`, including Btrfs subvolumes whose device number is not
+the mount table's. Power readings require system scope: a mouse/controller battery is not the
+machine's battery. Detailed `vk: VRAM:`/`vk: textures:` lines are retained separately from the
+short status line, so that line cannot hide the texture count and effective budget.
+Text redaction keeps ordinary `HH:MM:SS` modification times; an IPv6 address needs compressed
+groups or a full group count. Unknown cached display sizes are written as unknown, not `0x0`.
+
+Reports publish `manifest.json` last: `schema: 1`, `report_id`, `when`, and `files` entries with
+relative `name`, byte `size`, `status`, `reason`, `shareable`, and optional `incident_id`.
+The stored ZIP contains only explicitly collected, shareable entries (not itself); there is no
+wildcard/stem-based bundling. Local save copies and binary dumps are never shareable. Any failed
+copy keeps the original pending records. A missing diagnostic does not prevent the other files.
+Pending text uses `Hookshot <kind> record 1` (`crash`, `stall`, `unclean`); names are
+`<kind>-<UTC yyyymmddThhmmssZ>[-<pid>-<counter>].txt`. Known fields are bounded and redacted;
+unknown fields/free text are counted and omitted. Recognised stall stack files keep numeric thread
+IDs and module-basename offsets, not stack memory. `bug-reports/running/` is never examined.
+`run_id` is 32 lowercase hex digits, also written as `run_id: ...` immediately after the log's
+version banner. Incident lookup reads at most the first 64 KiB/64 lines of current and `.1`–`.4`
+logs and matches that identity. Missing IDs never justify guessing an incident's log. Ordinary
+manual reports retain the older current/previous-log behavior when no ID exists.
+Structured records/stacks accept LF or Windows CRLF; only their intake normalizes line endings,
+never the raw log copies or PNGs. File identity is checked before path spelling, so Windows
+short/long aliases do not make the current log look like the previous run.
+An unresolved stall from the current run (or with unknown run identity) is copied without
+unlinking its source or stack companion: the watchdog may still append its resumed line.
+Known current-run stalls do not trigger a previous-run startup report.
+This metadata is for a future launcher reader; the current game does not send or open anything.
+
 
 ### Time and profiles
 
