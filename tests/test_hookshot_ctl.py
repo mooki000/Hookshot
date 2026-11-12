@@ -537,11 +537,6 @@ class Sessions(unittest.TestCase):
         with mock.patch.object(self.m.os.path, "realpath", side_effect=lambda p: realpath(p) + os.sep + "."):
             dest = self.m.copy_save(str(source), str(self.root / "alias-data"))
         self.assertEqual((Path(dest) / "account.sav").read_bytes(), b"authored account")
-        if not WINDOWS:
-            alias = self.root / "linked-data"
-            alias.symlink_to(self.root / "alias-data", target_is_directory=True)
-            with self.assertRaisesRegex(self.m.Failed, "link or reparse point"):
-                self.m.copy_save(str(source), str(alias))
 
     def test_manifest_handles_and_binary_log_cursors(self):
         from unittest import mock
@@ -573,6 +568,69 @@ class Sessions(unittest.TestCase):
         self.assertEqual((second["text"], second["cursor"]), ("caf\u00e9\r\n", 14))
         self.assertEqual(session.log(since=14)["text"], "third\n")
         self.assertEqual(session.info()["log"], str(log))   # (native absolute path separators, not JSON-escaped text)
+
+
+    @unittest.skipIf(WINDOWS, "symlinked system parents are a Linux path policy; Windows aliases are tested above")
+    def test_save_destination_symlink_boundaries(self):
+        source = self.root / "source-links"
+        (source / "slot_00").mkdir(parents=True)
+        (source / "account.sav").write_bytes(b"authored account")
+        real = self.root / "real-parent"
+        real.mkdir()
+        parent = self.root / "linked-parent"
+        parent.symlink_to(real, target_is_directory=True)
+        dest = self.m.copy_save(str(source), str(parent / "data"))
+        self.assertEqual((Path(dest) / "account.sav").read_bytes(), b"authored account")
+        into_source = self.root / "into-source"
+        into_source.symlink_to(source, target_is_directory=True)
+        with self.assertRaisesRegex(self.m.Failed, "source and destination"):
+            self.m.copy_save(str(source), user=str(into_source))
+        root = self.root / "owned-root"
+        root.mkdir()
+        (root / "save").symlink_to(real, target_is_directory=True)
+        with self.assertRaisesRegex(self.m.Failed, "link or not a plain folder"):
+            self.m.copy_save(str(source), user=str(root))
+
+    def test_utf8_cursor_keeps_incomplete_characters(self):
+        session = self.start()
+        log = Path(session.info()["log"])
+        payload = "abcde\u20actail".encode("utf-8")
+        log.write_bytes(payload)
+        first = session.log(since=0, limit=7)
+        self.assertEqual((first["text"], first["cursor"]), ("abcde", 5))
+        second = session.log(since=first["cursor"], limit=7)
+        self.assertEqual(first["text"] + second["text"], payload.decode("utf-8"))
+        self.assertEqual(second["cursor"], len(payload))
+        self.assertTrue(session.expect_log("\u20ac", 0, timeout=1, limit=7)["matched"])
+        # (the writer has flushed only the first two bytes of the next character)
+        log.write_bytes(b"abcde\xe2\x82")
+        self.assertEqual(session.log(since=0)["cursor"], 5)
+        self.assertEqual(session.log(lines=0)["cursor"], 5)
+        with log.open("ab") as f:
+            f.write(b"\xac")
+        self.assertEqual(session.log(since=5)["text"], "\u20ac")
+        log.write_bytes("\u20ac\nnext\n".encode("utf-8"))
+        self.assertEqual(session.log(limit=8)["text"], "next\n")   # (the tail begins inside the three-byte character)
+        session.stop()
+        log.write_bytes(b"x\xe2")
+        final = session.log(since=0)
+        self.assertEqual((final["text"], final["cursor"]), ("x\ufffd", 2))   # (only a finished run's true EOF)
+
+    def test_stop_accepts_older_result_fields(self):
+        from unittest import mock
+        session = self.start(env={"FAKE_REFUSE_QUIT": "1"})
+        original = session.info
+
+        def older():
+            info = original()
+            if info.get("stop_result"):
+                info["stop_result"].pop("process_exited", None)
+            return info
+
+        with mock.patch.object(session, "info", side_effect=older):
+            result = session.stop(timeout=0.1)
+        self.assertEqual(result["state"], "running")
+        self.assertEqual(result["stop_result"]["method"], "quit-timeout")
 
 
 class HookshotCtl(unittest.TestCase):
