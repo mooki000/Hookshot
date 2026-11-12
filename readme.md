@@ -82,7 +82,8 @@ you start the game from its launcher, which also updates it.
   not supported.
 - 8 GB of video memory (VRAM) or more is recommended. Cards with less can use the in-game menu's lower Quality presets.
 - 16 GB of RAM or more. Memory use depends on the build, driver and scene: recent Linux/NVIDIA runs used roughly
-  13–17 GiB for the game alone, so even a 16 GB PC can need swap. Leave room for the desktop and other programs.
+  13–19 GiB for the game alone (see [tested configurations](docs/tested-configurations.md)), so even a 16 GB PC can need
+  swap. Leave room for the desktop and other programs.
   Swap can prevent an out-of-memory exit, but it is not extra RAM; heavy swapping can make the whole desktop unresponsive.
 - About 60 GB free while building, on an SSD if you can: a hard drive makes the build much slower. You can build on one
   anyway; the builder says so first.
