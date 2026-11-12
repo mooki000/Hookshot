@@ -169,6 +169,17 @@ def main():
     need(not re.search(r'^\s*#\s*include\s*[<"][^>"\n]*(?:vulkan|vk_internal)', source, re.M | re.I), "pure core has no Vulkan includes")
     need(not re.search(r'\b(?:setlocale|uselocale|_configthreadlocale)\s*\(', source), "production serialization never changes locales")
     with tempfile.TemporaryDirectory(prefix="perf-monitor-") as tmp:
+        # Compile the renderer's actual native callback binding too: getenv returns char*, while GetEnv returns const char*.
+        renderer = (ROOT / "gpu" / "vk" / "vk_perf.cpp").read_text(encoding="utf-8")
+        helper = re.search(r"^const char\* perf_environment[^\n]*", renderer, re.M)
+        binding = re.search(r"^\s*pm::Config config = pm::configuration\([^;\n]+;", renderer, re.M)
+        need(binding, "renderer configuration binding present")
+        adapter = Path(tmp) / "environment.cpp"
+        adapter.write_text('#define _CRT_SECURE_NO_WARNINGS\n#include <cstdlib>\n#include "' +
+                           (ROOT / "gpu/vk/perf_monitor.h").as_posix() + '"\nnamespace pm = mkwvk::perf_monitor;\n' +
+                           (helper[0] if helper else "") + '\npm::Config native_binding() {\nstd::vector<std::string> errors;\n' +
+                           binding[0] + '\nreturn config;\n}\n', encoding="utf-8")
+        subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", str(adapter)], check=True)
         exe = Path(tmp) / ("perf-monitor.exe" if os.name == "nt" else "perf-monitor")
         # List complete translation units explicitly: Windows-target fixture capture must see both, not an extracted fragment.
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",

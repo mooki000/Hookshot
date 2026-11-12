@@ -19,11 +19,12 @@ namespace pm = perf_monitor;
 std::unique_ptr<pm::Sampler> sampler;
 pm::RenderSample latest; // Only the replay thread writes this; the worker gets publish()'s locked copy.
 void report(const char* text) { logf("%s", text); }
+const char* perf_environment(const char* name) { return std::getenv(name); }
 }
 void perf_start() {
     if (sampler) return;
     std::vector<std::string> errors;
-    pm::Config config = pm::configuration(std::getenv, errors);
+    pm::Config config = pm::configuration(perf_environment, errors);
     for (const std::string& error : errors) logf("vk: perf: %s", error.c_str());
     if (!config.enabled()) return; // In particular: no device queries, allocation, thread or optional library while off.
     pm::Device gpu;
