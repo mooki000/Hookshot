@@ -347,8 +347,7 @@ class Sessions(unittest.TestCase):
                     self.assertFalse(self.m.ready_status(reply, "play"))
                 session.stop()
         for name, values, expected in (("timeout", {"FAKE_NO_BRIDGE": "1"}, "timed out"),
-                                       ("play-timeout", {"FAKE_PLAY_AFTER": "99"}, "timed out"),
-                                       ("exit", {"FAKE_EXIT": "7"}, "exited 7")):
+                                       ("play-timeout", {"FAKE_PLAY_AFTER": "99"}, "timed out")):
             with self.subTest(name=name):
                 run = self.root / name
                 env = dict(FAKE_LOG=str(self.root / "requests.jsonl"), FAKE_SESSION="1", **values)
@@ -359,6 +358,123 @@ class Sessions(unittest.TestCase):
                 self.assertEqual(info["state"], "failed")
                 self.assertIsNotNone(info["exit_code"])
                 self.assertFalse(self.m.same_process(info["pid"], info["process_start"]))
+
+    def test_exit_before_first_ready_poll_is_recorded(self):
+        from unittest import mock
+        run = self.root / "exit"
+        run.mkdir()
+        (run / "manifest.lock").write_bytes(b"\0")
+        env = {"FAKE_LOG": str(self.root / "exit-requests.jsonl"), "FAKE_EXIT": "7", "HOS_CONTROL": "never-listens"}
+        session = self.m.Session(run)
+        self.m.write_json(session.manifest, {"schema_version": 1, "command": [sys.executable, "-I", str(self.fake)],
+                                           "cwd": str(self.root), "environment": env, "log": str(run / "log.txt"),
+                                           "socket": "never-listens", "ready": "play", "ready_timeout": 0.3})
+        popen, wait_ready = subprocess.Popen, self.m.wait_ready
+
+        def exited_child(*args, **kwargs):
+            child = popen(*args, **kwargs)
+            self.assertEqual(child.wait(timeout=10), 7)   # (exit is established before the first readiness poll)
+            return child
+
+        def late_first_poll(*args):
+            with mock.patch.object(self.m.time, "monotonic", side_effect=[0, 1]), \
+                    mock.patch.object(self.m, "Bridge") as bridge:
+                try:
+                    return wait_ready(*args)
+                finally:
+                    bridge.assert_not_called()
+
+        with mock.patch.object(self.m.subprocess, "Popen", side_effect=exited_child), \
+                mock.patch.object(self.m, "wait_ready", side_effect=late_first_poll):
+            self.assertEqual(self.m.supervise(run), 2)
+        info = session.info()
+        self.assertEqual((info["state"], info["exit_code"], info["error_code"]), ("failed", 7, 2))
+        self.assertIn("game exited 7", info["error"])
+        self.assertFalse(self.m.same_process(info["pid"], info["process_start"]))
+
+    def test_ready_exit_at_deadline_wins_over_timeout(self):
+        from unittest import mock
+        session = mock.Mock(folder=self.root)
+        session.info.return_value = {"socket": "unused", "log": "unused.log"}
+        process = mock.Mock()
+        process.poll.side_effect = [None, 7]   # (alive before checking time, exited at the deadline)
+        with mock.patch.object(self.m.time, "monotonic", side_effect=[0, 1]), \
+                mock.patch.object(self.m, "Bridge") as bridge:
+            with self.assertRaisesRegex(self.m.Failed, "game exited 7") as caught:
+                self.m.wait_ready(session, "play", 1, process)
+        self.assertEqual(caught.exception.code, 2)
+        self.assertEqual(process.poll.call_count, 2)
+        bridge.assert_not_called()
+
+    def test_ready_checks_exit_after_transport_poll(self):
+        from unittest import mock
+        session = mock.Mock(folder=self.root)
+        session.info.return_value = {"socket": "unused", "log": "unused.log"}
+        process = mock.Mock(returncode=7)
+        process.poll.side_effect = [None, 7]
+        with mock.patch.object(self.m.time, "monotonic", return_value=0), \
+                mock.patch.object(self.m.time, "sleep") as sleep, \
+                mock.patch.object(self.m, "Bridge", side_effect=self.m.Failed("not listening", 2)):
+            with self.assertRaisesRegex(self.m.Failed, "game exited 7") as caught:
+                self.m.wait_ready(session, "play", 1, process)
+        self.assertEqual(caught.exception.code, 2)
+        sleep.assert_not_called()
+
+    def test_ready_live_child_at_deadline_still_times_out(self):
+        from unittest import mock
+        session = mock.Mock(folder=self.root)
+        session.info.return_value = {"socket": "unused", "log": "unused.log"}
+        process = mock.Mock()
+        process.poll.return_value = None
+        with mock.patch.object(self.m.time, "monotonic", side_effect=[0, 1]), \
+                mock.patch.object(self.m, "Bridge") as bridge:
+            with self.assertRaisesRegex(self.m.Failed, "ready=play timed out") as caught:
+                self.m.wait_ready(session, "play", 1, process)
+        self.assertEqual(caught.exception.code, 3)
+        self.assertEqual(process.poll.call_count, 2)
+        bridge.assert_not_called()
+
+    def test_stop_rechecks_exit_at_wait_deadline(self):
+        from unittest import mock
+        for force in (False, True):
+            with self.subTest(terminate=force):
+                process = mock.Mock(returncode=7)
+                process.wait.side_effect = subprocess.TimeoutExpired("fake", 1)
+                process.poll.return_value = 7
+                with mock.patch.object(self.m, "Bridge") as bridge:
+                    bridge.return_value.request.return_value = {"ok": True}
+                    result = self.m.stop_child(process, {"socket": "unused"}, 1, force)
+                self.assertEqual((result["method"], result["process_exited"], result["exit_code"]), ("quit", True, 7))
+                self.assertFalse(result["forced"])
+                process.terminate.assert_not_called()
+                process.kill.assert_not_called()
+        # (an exit between that final poll and a requested fallback is not a forced stop either)
+        process = mock.Mock(returncode=7)
+        process.wait.side_effect = subprocess.TimeoutExpired("fake", 1)
+        process.poll.side_effect = [None, 7]
+        with mock.patch.object(self.m, "Bridge") as bridge:
+            bridge.return_value.request.return_value = {"ok": True}
+            result = self.m.stop_child(process, {"socket": "unused"}, 1, True)
+        self.assertEqual(result["method"], "already-exited")
+        self.assertFalse(result["forced"])
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
+    def test_terminate_rechecks_exit_before_escalating(self):
+        from unittest import mock
+        process = mock.Mock(returncode=-15)
+        process.poll.side_effect = [None, -15]
+        process.wait.side_effect = subprocess.TimeoutExpired("fake", 5)
+        self.assertEqual(self.m.terminate_child(process), "terminate")
+        process.terminate.assert_called_once()
+        process.kill.assert_not_called()
+        # (a genuinely live child still needs the explicit fallback)
+        process = mock.Mock(returncode=-9)
+        process.poll.side_effect = [None, None]
+        process.wait.side_effect = [subprocess.TimeoutExpired("fake", 5), -9]
+        self.assertEqual(self.m.terminate_child(process), "kill")
+        process.terminate.assert_called_once()
+        process.kill.assert_called_once()
 
     def test_stop_timeout_force_and_external_owner(self):
         session = self.start(env={"FAKE_REFUSE_QUIT": "1"})

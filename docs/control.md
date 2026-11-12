@@ -491,6 +491,8 @@ launch waits, or the game can have an explicit input script. The state is still 
 main's `game` snapshot has no sample timestamp, so this is **not a freshness guarantee**. `--timeout` bounds readiness
 after admission. A failed start or readiness timeout terminates and reaps the game it started, leaves a failed
 manifest and log, and explains the last condition. It never silently abandons a timed-out game.
+Readiness checks the child's exit status before and after each bridge poll and again at the deadline: an observed exit
+is reported with its code, not hidden behind a readiness timeout.
 
 `stop` asks the original owner to send the bridge's `quit`, then waits for the game, supervisor and optional wrapper
 to exit and close their log handles. `finish` also refuses while any of those identities is still live. A quit timeout
@@ -498,6 +500,8 @@ returns status 3 with `process_exited:false`; the game stays owned and running. 
 owner to terminate its child after that timeout (and kill it after five more seconds). The manifest reports the method
 and actual exit code. An attaching client never sends an OS signal to a pid from disk; if the owner is gone it refuses
 forced stopping. There is no command to adopt an arbitrary `--sock` game as an owned process.
+Stop also rechecks the child at a wait deadline before reporting a timeout or escalating. A child found already exited
+is not reported as forcibly terminated.
 The bridge's `game_quit` flushes the log and exits, **but has no save-in-progress barrier**. `save_drain` is
 `unsupported`, or `unknown` for an observed orphan exit, never `clean`. A copied save is not a validated checkpoint.
 

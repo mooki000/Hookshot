@@ -861,27 +861,34 @@ def ready_status(reply, level):
 
 
 def wait_ready(session, level, timeout, process):
+    def check_exit():
+        code = process.poll()
+        if code is not None:
+            raise Failed("game exited %d before ready=%s" % (code, level), 2)
+
     deadline, last = time.monotonic() + timeout, "no status reply"
-    while time.monotonic() < deadline:
+    while True:
+        check_exit()   # (also before testing the deadline: an already-exited child is not a readiness timeout)
         if (session.folder / "cancel").exists():
             raise Failed("launch cancelled while waiting for readiness", 3)
-        if process.poll() is not None:
-            raise Failed("game exited %d before ready=%s" % (process.returncode, level), 2)
-        b = None
+        left = deadline - time.monotonic()
+        if left <= 0:
+            check_exit()   # (the child may have exited between the poll and the deadline check)
+            raise Failed("ready=%s timed out: %s; see %s" % (level, last, session.info()["log"]), 3)
+        b, reply = None, None
         try:
-            left = max(0.001, min(1, deadline - time.monotonic()))
-            b = Bridge(session.info()["socket"], left)
-            reply = b.request("status", reply_timeout=left)
-            if ready_status(reply, level):
-                return reply
+            b = Bridge(session.info()["socket"], min(1, left))
+            reply = b.request("status", reply_timeout=max(0, min(1, deadline - time.monotonic())))
             last = "state=%s frame=%s game=%s" % (reply.get("state"), reply.get("frame"), reply.get("game"))
         except Failed as e:
             last = str(e)
         finally:
             if b:
                 b.close()
-        time.sleep(0.05)
-    raise Failed("ready=%s timed out: %s; see %s" % (level, last, session.info()["log"]), 3)
+        check_exit()   # (a connection failure or reply can arrive after the child exited)
+        if reply is not None and ready_status(reply, level):
+            return reply
+        time.sleep(min(0.05, max(0, deadline - time.monotonic())))
 
 
 def stop_child(process, info, timeout, terminate):
@@ -898,11 +905,12 @@ def stop_child(process, info, timeout, terminate):
     try:
         process.wait(timeout=max(0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
-        if not terminate:
-            return {"method": "quit-timeout", "process_exited": False, "forced": False,
-                    "save_drain": "unsupported", "error": error}
-        method = terminate_child(process)
-    return {"method": method, "process_exited": True, "forced": method != "quit", "exit_code": process.returncode,
+        if process.poll() is None:   # (wait can lose the race to an exit at its deadline)
+            if not terminate:
+                return {"method": "quit-timeout", "process_exited": False, "forced": False,
+                        "save_drain": "unsupported", "error": error}
+            method = terminate_child(process)
+    return {"method": method, "process_exited": True, "forced": method in ("terminate", "kill"), "exit_code": process.returncode,
             "save_drain": "unsupported", "error": error}
 
 
@@ -915,9 +923,11 @@ def terminate_child(process):
         process.wait(timeout=5)
         return "terminate"
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-        return "kill"
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+            return "kill"
+        return "terminate"
 
 
 def supervise(folder):
