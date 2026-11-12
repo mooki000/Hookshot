@@ -467,10 +467,21 @@ def copy_save(src, data, slot=None):
     return dest
 
 
+def game_exe(game, exe=None):
+    """A builder folder's root executable is the launcher, not the game; a source build has no bin folder"""
+    if exe:
+        return os.path.abspath(exe)
+    name = "hookshot.exe" if WINDOWS else "hookshot"
+    nested = os.path.join(game, "bin", name)
+    if os.path.isfile(nested) or os.path.isdir(os.path.join(game, "bin")):
+        return nested   # (an incomplete builder folder must not fall back to its launcher)
+    return os.path.join(game, name)
+
+
 def launch(a):
     """The game in GAME_DIR with HOS_CONTROL set, its socket in a run folder of its own; waits until it answers"""
     game = os.path.abspath(a.game_dir)
-    exe = os.path.join(game, "hookshot.exe" if WINDOWS else "hookshot")
+    exe = game_exe(game, a.exe)
     if not os.path.isfile(exe):
         raise Failed("no game at %s" % exe, 2)
     run_dir = os.path.abspath(a.run) if a.run else tempfile.mkdtemp(prefix="hookshot-control-",
@@ -499,7 +510,13 @@ def launch(a):
     log = os.path.join(run_dir, "log.txt")
     with open(log, "wb") as out:
         kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
-        p = subprocess.Popen([exe], cwd=game, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **kw)
+        cmd = [exe]
+        if a.image:
+            cmd.append(os.path.abspath(a.image))
+        for flag in ("romfs", "user"):
+            if getattr(a, flag):
+                cmd.extend(["--" + flag, os.path.abspath(getattr(a, flag))])
+        p = subprocess.Popen(cmd, cwd=game, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **kw)
     deadline = time.monotonic() + a.timeout
     while True:
         if p.poll() is not None:
@@ -535,6 +552,10 @@ def main(argv=None):
 
     q = sub.add_parser("launch", help="start a game folder with the bridge on")
     q.add_argument("game_dir")
+    q.add_argument("--exe", help="the game executable, instead of finding it in GAME_DIR")
+    q.add_argument("--image", help="an explicit image.bin (the game's positional image argument)")
+    q.add_argument("--romfs", help="the game's --romfs folder")
+    q.add_argument("--user", help="the game's --user folder, on Linux and Windows")
     q.add_argument("--data", help="XDG_DATA_HOME for the run (its saves)")
     q.add_argument("--save", help="a save folder (<data>/hookshot/save/<user id>) copied in first (Linux); the source is "
                                   "only read")
