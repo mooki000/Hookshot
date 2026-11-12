@@ -27,6 +27,8 @@ void perf_start() {
     pm::Config config = pm::configuration(perf_environment, errors);
     for (const std::string& error : errors) logf("vk: perf: %s", error.c_str());
     if (!config.enabled()) return; // In particular: no device queries, allocation, thread or optional library while off.
+    for (int i = pm::kVramUsed; i <= pm::kGpuMs; i++) latest.values[i] = {0, pm::Reason::Warmup};
+    for (int i = pm::kPipelines; i <= pm::kGpuWaitMs; i++) latest.values[i] = {0, pm::Reason::Warmup};
     pm::Device gpu;
     gpu.vendor_id = dev.props.vendorID;
     VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
@@ -88,7 +90,7 @@ void perf_replay_present(int64_t present, int64_t gpu_ns, int64_t wait_ns, bool 
         texture_stats(&uploads, &astc, &bytes);
         latest.values[pm::kUploadBytes] = pm::Value::of(static_cast<double>(bytes));
     }
-    latest.values[pm::kGpuMs] = gpu_timing ? pm::Value::of(gpu_ns / 1e6) : pm::Value{};
+    latest.values[pm::kGpuMs] = gpu_timing ? pm::Value::of(gpu_ns / 1e6) : pm::Value{0, pm::Reason::Warmup};
     latest.values[pm::kGpuWaitMs] = pm::Value::of(wait_ns / 1e6);
     sampler->publish(latest);
 }

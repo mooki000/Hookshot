@@ -232,6 +232,8 @@ void cpu_sensors_and_power() {
     expect(reader, kCpuClock, 4500);
 
     files.directories["/sys/class/power_supply"] = {"BAT0", "AC0"};
+    files.contents["/sys/class/power_supply/BAT0/scope"] = "System\n";
+    files.contents["/sys/class/power_supply/AC0/scope"] = "System\n";
     files.contents["/sys/class/power_supply/BAT0/type"] = "Battery\n";
     files.contents["/sys/class/power_supply/BAT0/capacity"] = "67\n";
     files.contents["/sys/class/power_supply/AC0/type"] = "Mains\n";
@@ -247,6 +249,7 @@ void cpu_sensors_and_power() {
     reason(reader, kBattery, Reason::Invalid);
     expect(reader, kAcOnline, 1);
     files.directories["/sys/class/power_supply"].push_back("BAT1");
+    files.contents["/sys/class/power_supply/BAT1/scope"] = "System\n";
     files.contents["/sys/class/power_supply/BAT1/type"] = "Battery\n";
     files.contents["/sys/class/power_supply/BAT1/capacity"] = "23\n";
     fixture.begin(6, bit(kBattery) | bit(kAcOnline));
@@ -256,6 +259,23 @@ void cpu_sensors_and_power() {
     fixture.begin(7, bit(kBattery) | bit(kAcOnline));
     reason(reader, kBattery, Reason::NoDevice);
     reason(reader, kAcOnline, Reason::NoDevice);
+    // Regression: a desktop's HID++ mouse battery was reported as the computer's charge.
+    files.directories["/sys/class/power_supply"] = {"hidpp_battery_0"};
+    files.contents["/sys/class/power_supply/hidpp_battery_0/scope"] = "Device\n";
+    files.contents["/sys/class/power_supply/hidpp_battery_0/type"] = "Battery\n";
+    files.contents["/sys/class/power_supply/hidpp_battery_0/capacity"] = "77\n";
+    files.clear_calls();
+    fixture.begin(8, bit(kBattery) | bit(kAcOnline));
+    reason(reader, kBattery, Reason::NoDevice);
+    reason(reader, kAcOnline, Reason::NoDevice);
+    assert(std::find(files.reads.begin(), files.reads.end(), "/sys/class/power_supply/hidpp_battery_0/capacity") == files.reads.end());
+    files.directories["/sys/class/power_supply"].push_back("BAT0");
+    files.contents["/sys/class/power_supply/BAT0/capacity"] = "67\n";
+    fixture.begin(9, bit(kBattery));
+    expect(reader, kBattery, 67); // The peripheral does not turn one system pack into an ambiguous pair.
+    files.contents.erase("/sys/class/power_supply/BAT0/scope");
+    fixture.begin(10, bit(kBattery));
+    reason(reader, kBattery, Reason::ReadError);
 }
 
 void sysfs_gpu_identity() {

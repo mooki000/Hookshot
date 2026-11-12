@@ -195,6 +195,8 @@ it is not the process's CPU time or an on/off frame-time comparison. The thread 
 
 The first line is `# hookshot_perf,1,` followed by column names. The second is
 `# started,<UTC ISO8601 time>,<Hookshot version>`; after the first, readers ignore lines starting with `#`.
+An optional `# gpu_vendor,<hex Vulkan vendor ID>` comment identifies the selected GPU (for example `0x10de`
+for NVIDIA); older v1 files may lack it, so a decoder must then require independent device provenance.
 Rows are UTF-8 CSV, with quoted strings, decimal dots, and `na` for disabled/unavailable numbers. Values are finite;
 invalid values (including 0/255-degree temperatures or device use above 100%) get `na` and one reason in the main log.
 The common columns are `kind,sample,monotonic_ns,elapsed_s,game_frame,renderer_present,frame,time_s,clock,thread_name,event,detail`.
@@ -213,7 +215,7 @@ not display timing) or `swapchain`; neither is a GPU-completion or input-latency
 | `gpu_use_pct,gpu_temp_c,gpu_power_w,gpu_fan_pct,gpu_clock_mhz,gpu_throttle_mask,gpu_memory_used_bytes` | Whole selected GPU, including other programs. NVIDIA NVML if installed; Linux AMD sysfs where exposed; Intel's exposed clock only. Throttle reasons are NVIDIA's bit mask, not a bottleneck diagnosis |
 | `vram_used_bytes,vram_budget_bytes,texture_used_bytes,texture_budget_bytes,gpu_ms` | Latest renderer-owned budget snapshot (VK_EXT_memory_budget, never an allocation-only fallback called a driver budget), texture use/budget, completed GPU timestamp time per replayed frame. Timestamps can arrive late and exclude the present blit |
 | `cpu_process_pct,cpu_thread_pct,rss_bytes,commit_bytes,ram_available_bytes,swap_used_bytes,disk_read_bytes` | Process CPU (100%=one logical CPU), busiest sampled thread (name in `thread_name`), process RSS/working set, Windows private commit, PC available RAM, Linux swap used, cumulative process read bytes |
-| `cpu_temp_c,cpu_clock_mhz,battery_pct,ac_online` | Linux named package temperature, highest readable CPU scaling clock, one unambiguous battery's charge and AC state. No battery or unsupported system means `na` |
+| `cpu_temp_c,cpu_clock_mhz,battery_pct,ac_online` | Linux named package temperature, highest readable CPU scaling clock, one unambiguous system-scoped battery's charge and AC state. Peripheral/device-scoped supplies are excluded; unreadable scope is not guessed. No battery or unsupported system means `na` |
 | `pipelines,left_out,upload_bytes,gpu_wait_ms` | Interval changes in pipelines made, draws left out for pending pipelines, uploaded texture bytes and recording-slot wait milliseconds. Not #2897's all-thread resource-wait population |
 
 Linux CPU/RAM/I/O come from this process's procfs and system meminfo; thread deltas exclude new/reused IDs until two
@@ -228,6 +230,9 @@ The only NVML entry points are `nvmlInit_v2`, `nvmlShutdown`, `nvmlDeviceGetHand
 `nvmlDeviceGetUtilizationRates`, `nvmlDeviceGetTemperature`, `nvmlDeviceGetPowerUsage`,
 `nvmlDeviceGetFanSpeed`, `nvmlDeviceGetClockInfo`, `nvmlDeviceGetCurrentClocksThrottleReasons`
 and `nvmlDeviceGetMemoryInfo`. No call changes clocks, power limits, fans or other device state.
+`gpu_throttle_mask` is the raw NVIDIA **clocks throttle reasons** bit field, not a boolean or a temperature verdict.
+In particular `0x1` means **GPU idle**, not thermal throttling. Interpret other bits only with the matching vendor's
+NVML definition; a nonzero mask alone does not establish overheating, a power limit or the cause of a slow frame.
 Windows AMD/Intel GPU sensors are not implemented; Linux Intel use/temperature are absent unless a supported source
 exists. No inference from temperature, frequency, a frame gap or another GPU substitutes for a missing value.
 

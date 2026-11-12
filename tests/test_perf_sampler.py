@@ -32,6 +32,7 @@ def main():
         prefix = "# hookshot_perf,1,"
         assert lines[0].startswith(prefix)
         assert re.fullmatch(r'# started,\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ,"test-build,quoted"', lines[1]), lines[1]
+        assert lines[2] == "# gpu_vendor,0x0000"  # No vendor is invented by the authored fake.
         columns = lines[0][len(prefix):].split(",")
         parsed = list(csv.reader(line for line in lines[1:] if not line.startswith("#")))
         assert all(len(row) == len(columns) for row in parsed)

@@ -502,11 +502,15 @@ class LinuxInputs final : public Inputs {
             return;
         }
         unsigned packs = 0, mains = 0;
-        bool unknown_type = false, ac_failed = false;
+        bool unknown_supply = false, ac_failed = false;
         Value capacity = unavailable(Reason::NoDevice), online = unavailable(Reason::NoDevice);
         for (const auto& supply : supplies) {
             const auto path = "/sys/class/power_supply/" + supply;
-            if (!files->read(path + "/type", text)) { unknown_type = true; continue; }
+            // A mouse/controller's Battery is not the PC's battery. An unreadable scope is not guessed.
+            if (!files->read(path + "/scope", text)) { unknown_supply = true; continue; }
+            if (trim(text) == "Device") continue;
+            if (trim(text) != "System") { unknown_supply = true; continue; }
+            if (!files->read(path + "/type", text)) { unknown_supply = true; continue; }
             const auto type = trim(text);
             if ((requested & bit(kBattery)) && type == "Battery") {
                 ++packs;
@@ -518,9 +522,9 @@ class LinuxInputs final : public Inputs {
                 else if (!online.available() || value.number == 1) online = value;
             }
         }
-        result.values[kBattery] = unknown_type ? unavailable(Reason::ReadError) :
+        result.values[kBattery] = unknown_supply ? unavailable(Reason::ReadError) :
             packs > 1 ? unavailable(Reason::Unsupported) : capacity;
-        result.values[kAcOnline] = (unknown_type || (ac_failed && (!online.available() || online.number != 1))) ?
+        result.values[kAcOnline] = (unknown_supply || (ac_failed && (!online.available() || online.number != 1))) ?
             unavailable(Reason::ReadError) : mains ? online : unavailable(Reason::NoDevice);
     }
 public:

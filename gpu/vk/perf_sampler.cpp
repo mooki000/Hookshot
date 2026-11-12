@@ -78,7 +78,10 @@ FILE* create_log(const std::string& requested, std::string& actual, std::string&
 Sampler::Sampler(Config settings, Device gpu, std::string frame_clock, std::string build_version, Report logger,
                  std::atomic<bool>& active, ReaderFactory make)
     : config(std::move(settings)), device(std::move(gpu)), clock(std::move(frame_clock)), version(std::move(build_version)),
-      report(logger), factory(make), collecting(active) {}
+      report(logger), factory(make), collecting(active) {
+    for (int i = kVramUsed; i <= kGpuMs; i++) renderer.values[i] = {0, Reason::Warmup};
+    for (int i = kPipelines; i <= kGpuWaitMs; i++) renderer.values[i] = {0, Reason::Warmup};
+}
 Sampler::~Sampler() { stop(); }
 bool Sampler::start() {
     if (!config.enabled() || worker.joinable()) return false;
@@ -129,6 +132,8 @@ void Sampler::run() {
         char started[32] = "na";
         if (utc_ok) std::strftime(started, sizeof started, "%Y-%m-%dT%H:%M:%SZ", &utc);
         if (!csv_started(file, started, version.c_str())) throw std::runtime_error("cannot write header");
+        if (std::fprintf(file, "# gpu_vendor,0x%04x\n", static_cast<unsigned>(device.vendor_id)) < 0 || std::fflush(file) != 0)
+            throw std::runtime_error("cannot write GPU vendor comment");
         say("writing " + actual + "; frame I/O stays on the sampler thread");
         std::unique_ptr<Reader> reader = factory(device);
         if (!reader) throw std::runtime_error("system reader unavailable");

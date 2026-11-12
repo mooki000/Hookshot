@@ -3812,7 +3812,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             pending = {true, value, presents, {}};
         }
         log_frame_stats();
-        if (perf_on()) perf_replay_present(presents, st_gpu_ns, st_wait_ns, ts_pool != VK_NULL_HANDLE);
+        if (perf_on()) perf_replay_present(presents, st_gpu_ns, st_wait_ns, st_gpu_ns > 0);
     }
     if (dev.offscreen) frame_log_present();   // (no window: the copy into the offscreen image above is its present)
     if (dev.offscreen || interpolated) return;
