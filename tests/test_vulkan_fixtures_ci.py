@@ -36,6 +36,7 @@ def successful(fixture):
     for pattern in fixture[2]:
         lines.append(pattern.replace(r"[1-9][0-9]*", "100").replace(r"\ ", " "))
     lines.append(fixture[3])
+    lines.extend(runner.ACTIVATION)
     return "\n".join(lines) + "\n"
 
 
@@ -79,6 +80,12 @@ class Output(unittest.TestCase):
                 with self.subTest(fixture=fixture[0]), self.assertRaises(ValueError):
                     runner.check_fixture(fixture, 0, changed, "llvmpipe")
 
+    def test_each_fixture_requires_actual_validation_activation(self):
+        for fixture in runner.FIXTURES:
+            for message in runner.ACTIVATION:
+                with self.subTest(fixture=fixture[0], message=message), self.assertRaises(ValueError):
+                    runner.check_fixture(fixture, 0, successful(fixture).replace(message, ""), "llvmpipe")
+
     def test_validation_errors_fail_even_with_all_pass_lines(self):
         for fixture in runner.FIXTURES:
             for error in ("Validation Error: [ UNASSIGNED-Test ] broken\n", "validation: broken\n",
@@ -115,6 +122,7 @@ class Output(unittest.TestCase):
                 command, used_env = call.args
                 self.assertEqual(command[-len(fixture[1]) - 1:], [*fixture[1], "llvmpipe"])
                 self.assertEqual(used_env["VK_INSTANCE_LAYERS"], runner.LAYER)
+                self.assertEqual(used_env["VK_LOADER_DEBUG"], "layer")
             self.assertIn("2 passed, 1 failed, 0 skipped", summary.read_text(encoding="utf-8"))
 
 
