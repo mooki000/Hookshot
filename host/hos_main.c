@@ -442,7 +442,7 @@ static int env_line_allowed(const char *name, const char *value) {
        resolves in the game's folder (HOS_SAMPLE_FILE=hookshot_vk.dll emptied the renderer) */
     const size_t nl = strlen(name);
     int names_file = (nl > 5 && (!strcmp(name + nl - 5, "_FILE") || !strcmp(name + nl - 4, "_DIR"))) ||
-                     !strcmp(name, "RX_VK_FRAME_LOG") || !strcmp(name, "HOS_PRESENT_TRACE");
+                     !strcmp(name, "RX_VK_FRAME_LOG") || !strcmp(name, "RX_VK_PERF_LOG") || !strcmp(name, "HOS_PRESENT_TRACE");
     /* (hookshot) and the test switches whose value is a file or folder under another name (HOS_AUDIO_DUMP=image.bin
        overwrote the game's image), or that press buttons and menu keys on a timer (a shared file erased a save from
        the file select) */

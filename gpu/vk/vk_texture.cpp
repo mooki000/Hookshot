@@ -40,6 +40,7 @@
 #include "vk_gprof.h"
 #include "vk_dump.h"
 #include "vk_jobs.h"
+#include "vk_perf.h"
 
 #include <span>
 
@@ -4346,6 +4347,7 @@ void texture_frame(uint64_t completed) {
     // this takes more than that share of the allowance free in their pool. Otherwise the pass is the hold's, and what the
     // limit and the 90% rule ask for goes by rule_to)
     if (budget < evict_to) evict_to = hold_to = 0;
+    if (perf_on()) perf_texture_budget(used, allowed, total_bytes, budget, known && dev.memory_budget);
     if (frame_no % 600 == 0) {
         vma_log_heaps();
         vma_log_image_blocks();

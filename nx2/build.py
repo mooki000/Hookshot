@@ -1233,7 +1233,7 @@ def main():
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
                             vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
-                            ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
+                            ([stamp_def] if os.path.basename(src) in ("vk_menu.cpp", "vk_perf.cpp") else []) +
                             (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
                             (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []),
