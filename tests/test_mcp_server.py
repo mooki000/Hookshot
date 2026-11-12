@@ -33,7 +33,8 @@ from test_hookshot_ctl import FAKE
 
 class Fixture:
     def __init__(self, root):
-        self.root = Path(root)
+        # Windows may give tempfile an 8.3 spelling; use the session API's canonical paths throughout.
+        self.root = Path(root).resolve()
         self.fake = self.root / "fake.py"
         self.fake.write_text(FAKE, encoding="utf-8")
         self.requests = self.root / "requests.jsonl"
@@ -109,7 +110,7 @@ class InMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info["profile"], "test")
         self.assertEqual(info["environment"]["HOS_HEADLESS"], "1")
         self.assertEqual(info["environment"]["HOS_AUDIO"], "0")
-        self.assertEqual(Path(info["user"]).parent, Path(info["run"]))
+        self.assertEqual(Path(info["user"]).resolve().parent, Path(info["run"]).resolve())
         self.assertEqual((source / "slot_03" / "progress.sav").read_bytes(), b"authored save")
         self.assertEqual((await self.call("runs"))["runs"][0]["run_id"], key)
         self.assertEqual((await self.call("show"))["run"], info)
@@ -142,7 +143,7 @@ class InMemory(unittest.IsolatedAsyncioTestCase):
         shot = await self.client.call_tool("screenshot", {})
         self.assertFalse(any(c.type == "image" for c in shot.content))
         path = Path(shot.structured_content["reply"]["path"])
-        self.assertEqual(path.parent, Path(info["run"]) / "shots")
+        self.assertEqual(path.parent.resolve(), (Path(info["run"]) / "shots").resolve())
         self.assertTrue(path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
         inline = await self.client.call_tool("screenshot", {"inline": True})
         picture = next(c for c in inline.content if c.type == "image")
@@ -217,16 +218,16 @@ class InMemory(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((outside / "run").exists())
         launched = await self.call("launch", run="chosen")
         folder = Path(launched["run"]["run"])
-        self.assertEqual(folder, self.fixture.cfg.root / "chosen")
+        self.assertEqual(folder.resolve(), (self.fixture.cfg.root / "chosen").resolve())
         for path in ("../escape.png", "shots/../inside.png", str(folder / "absolute.png")):
             await self.error("screenshot", 2, path=path)
         self.assertFalse(any(r["cmd"] == "shot" for r in self.fixture.rows()))
         shot = await self.call("screenshot", path="relative.png")
-        self.assertEqual(Path(shot["reply"]["path"]), folder / "relative.png")
+        self.assertEqual(Path(shot["reply"]["path"]).resolve(), (folder / "relative.png").resolve())
         await self.call("stop")
         self.fixture.cfg.game_dir = None
         chosen = await self.call("launch", game_dir=str(outside))
-        self.assertEqual(chosen["run"]["game"], str(outside))
+        self.assertEqual(Path(chosen["run"]["game"]).resolve(), outside.resolve())
 
     async def test_symlinks_cannot_escape_paths(self):
         outside = self.fixture.root / "outside"
@@ -271,9 +272,9 @@ class Stdio(unittest.TestCase):
     def test_initialize_list_call_resource_error_and_eof(self):
         with tempfile.TemporaryDirectory(prefix="mcp-wire-") as tmp:
             fixture = Fixture(tmp)
-            with open(Path(tmp) / "server.stderr", "w+", encoding="utf-8") as err:
+            with open(fixture.root / "server.stderr", "w+", encoding="utf-8") as err:
                 args = [sys.executable, "-I", "-B", str(ROOT / "scripts" / "hookshot_mcp.py"),
-                        "--root", str(fixture.cfg.root), "--game-dir", tmp, "--exe", sys.executable,
+                        "--root", str(fixture.cfg.root), "--game-dir", str(fixture.root), "--exe", sys.executable,
                         "--image", str(fixture.fake)]
                 for key, value in fixture.cfg.env.items():
                     args += ["--env", key + "=" + value]
