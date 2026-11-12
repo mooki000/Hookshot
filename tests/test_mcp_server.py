@@ -138,7 +138,6 @@ class InMemory(unittest.IsolatedAsyncioTestCase):
         self.assertIn("destinations", (await self.call("teleport"))["reply"])
         await self.call("age", to="child")
         self.assertEqual(len((await self.call("saves"))["reply"]["slots"]), 2)
-        self.assertEqual(len((await self.call("slots"))["reply"]["slots"]), 2)
         cursor = (await self.call("logs", lines=0))["cursor"]
         shot = await self.client.call_tool("screenshot", {})
         self.assertFalse(any(c.type == "image" for c in shot.content))
@@ -205,6 +204,53 @@ class InMemory(unittest.IsolatedAsyncioTestCase):
         stopped = (await self.call("stop", timeout=0.1, terminate=True))["run"]
         self.assertTrue(stopped["stop_result"]["forced"])
         self.assertEqual(stopped["save_drain"], "unsupported")
+
+    async def test_configured_path_boundaries(self):
+        outside = self.fixture.root / "outside"
+        outside.mkdir()
+        await self.error("launch", 2, game_dir=str(outside))
+        for path in ("../escape", str(outside / "run")):
+            await self.error("launch", 2, run=path)
+            await self.error("show", 2, run=path)
+            await self.error("attach", 2, run=path)
+            await self.error("stop", 2, run=path, terminate=True)
+        self.assertFalse((outside / "run").exists())
+        launched = await self.call("launch", run="chosen")
+        folder = Path(launched["run"]["run"])
+        self.assertEqual(folder, self.fixture.cfg.root / "chosen")
+        for path in ("../escape.png", "shots/../inside.png", str(folder / "absolute.png")):
+            await self.error("screenshot", 2, path=path)
+        self.assertFalse(any(r["cmd"] == "shot" for r in self.fixture.rows()))
+        shot = await self.call("screenshot", path="relative.png")
+        self.assertEqual(Path(shot["reply"]["path"]), folder / "relative.png")
+        await self.call("stop")
+        self.fixture.cfg.game_dir = None
+        chosen = await self.call("launch", game_dir=str(outside))
+        self.assertEqual(chosen["run"]["game"], str(outside))
+
+    async def test_symlinks_cannot_escape_paths(self):
+        outside = self.fixture.root / "outside"
+        outside.mkdir()
+        self.fixture.cfg.root.mkdir()
+        link = self.fixture.cfg.root / "linked"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                self.skipTest("this Windows account cannot create symbolic links")
+            raise
+        await self.error("launch", 2, run=str(link / "run"))
+        await self.error("show", 2, run=str(link / "run"))
+        await self.error("attach", 2, run=str(link / "run"))
+        await self.error("stop", 2, run=str(link / "run"), terminate=True)
+        game_link = self.fixture.root / "game-link"
+        game_link.symlink_to(outside, target_is_directory=True)
+        await self.error("launch", 2, game_dir=str(game_link))
+        launched = await self.call("launch")
+        (Path(launched["run"]["run"]) / "out").symlink_to(outside, target_is_directory=True)
+        await self.error("screenshot", 2, path="out/escape.png")
+        self.assertFalse((outside / "escape.png").exists())
+        self.assertFalse(any(r["cmd"] == "shot" for r in self.fixture.rows()))
 
     async def test_images_and_json_are_bounded(self):
         launched = await self.call("launch")

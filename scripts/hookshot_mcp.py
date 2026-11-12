@@ -147,9 +147,18 @@ def disconnect(bridge):
 class Runs:
     def __init__(self, cfg):
         self.cfg, self.current = cfg, None
+        self.root = cfg.root.resolve()
         self.sessions, self.locks = {}, {}
 
+    def folder(self, run):
+        path = Path(run)
+        path = (path if path.is_absolute() else self.root / path).resolve()
+        if path == self.root or not path.is_relative_to(self.root):
+            raise ctl.Failed("run folder must be inside the configured root", 2)
+        return path
+
     def remember(self, session):
+        self.folder(session.folder)
         key = hashlib.sha256(str(session.folder).encode("utf-8")).hexdigest()[:16]
         self.sessions[key] = session
         self.locks.setdefault(key, asyncio.Lock())
@@ -162,7 +171,7 @@ class Runs:
             raise ctl.Failed("no run selected; launch or attach first", 2)
         if run in self.sessions:
             return run, self.sessions[run]
-        session = ctl.Session(run)
+        session = ctl.Session(self.folder(run))
         return self.remember(session), session
 
     async def local(self, run, method, **kwargs):
@@ -236,12 +245,17 @@ def create_server(cfg=None):
         """Start a windowless, muted test profile with its own user folder; optionally copy a save/slot.
 
         Executable, environment, cache paths and admission wrapper are server configuration, not tool arguments.
+        A configured game_dir cannot be changed by a tool; without one, the caller chooses what is executed.
+        Run folders stay under the configured root. Save may be anywhere readable; it is only read and copied.
         Readiness is checked after admission. Play readiness does not press through menus for you.
         """
         game = game_dir or cfg.game_dir
         if not game:
             raise ctl.Failed("game_dir is required (or start the server with --game-dir)", 2)
-        session = await complete(ctl.start_session, game, run=run, root=str(cfg.root), save=save, slot=slot,
+        if cfg.game_dir and Path(game).resolve() != Path(cfg.game_dir).resolve():
+            raise ctl.Failed("game_dir differs from the server's configured game folder", 2)
+        run = str(runs.folder(run)) if run is not None else None
+        session = await complete(ctl.start_session, game, run=run, root=str(runs.root), save=save, slot=slot,
                                  profile="test", ready=ready, timeout=timeout, exe=cfg.exe, image=cfg.image,
                                  romfs=cfg.romfs, cwd=cfg.cwd, env=cfg.env, wrapper=cfg.wrapper)
         key = runs.remember(session)
@@ -324,13 +338,19 @@ def create_server(cfg=None):
     async def screenshot(path: str | None = None, inline: bool = False, timeout: Seconds = 30,
                          run: str | None = None) -> ToolResult:
         """Capture a Vulkan PNG in the run's shots folder by default. Inline images are opt-in, at most 4 MiB.
-        Relative explicit paths are relative to the run folder; the game may replace an existing file.
+        Explicit paths must be relative, without '..', and resolve inside the run folder; existing files may be replaced.
         """
         key, session = runs.select(run)
-        if path and not Path(path).is_absolute():
-            path = str(session.folder / path)
+        if path is not None:
+            relative = Path(path)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ctl.Failed("screenshot path must be relative without '..'", 2)
+            path = str(session.folder / relative)
         args = session.prepare("shot", {"path": path})
-        expected = Path(args["path"]).absolute()
+        expected = Path(args["path"]).resolve()
+        if not expected.is_relative_to(session.folder) or expected == session.folder:
+            raise ctl.Failed("screenshot path must stay inside the run folder (no links out)", 2)
+        args["path"] = str(expected)
         reply = await runs.request(key, "shot", timeout, **args)
         if Path(reply["path"]).absolute() != expected:
             raise ctl.Failed("game reported a different screenshot path; refusing to read it", 2)
@@ -383,13 +403,7 @@ def create_server(cfg=None):
     @mcp.tool(annotations=READ)
     @errors
     async def saves(run: str | None = None) -> ReplyResult:
-        """List the current save folder and slot metadata; this does not force a save or validate a checkpoint."""
-        return ReplyResult(reply=await runs.request(run, "saves"))
-
-    @mcp.tool(annotations=READ)
-    @errors
-    async def slots(run: str | None = None) -> ReplyResult:
-        """Read slot metadata through the same saves command as the CLI; no save-file content is returned."""
+        """Read the current save folder; includes the slot metadata. This does not force a save or validate a checkpoint."""
         return ReplyResult(reply=await runs.request(run, "saves"))
 
     @mcp.tool(annotations=READ)
