@@ -186,7 +186,7 @@ hot code at `-O1`, about a quarter less compile time. Never use it for fps, timi
 
 ### Game-free checks
 
-These need no dump and are what CI runs, on every pull request and every push to `main`. One command runs them all:
+These need no dump and are what CI runs, on every pull request and every push to `main`. One command runs the source checks:
 
 ```powershell
 python -I -B tests/run_all.py
@@ -204,6 +204,11 @@ validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` 
 cache in `RX_CPM` or `build-linux/deps/cpm`), or the `zstandard` package. A check whose tool is missing is skipped and
 says so; CI passes `--strict`, which fails it instead. A check that cannot run in CI (a GPU, the game, a Visual Studio
 prompt), or runs on one OS only, says so in its own file with `RUN_ALL_SKIP`; `--no-skip` runs it anyway.
+
+CI also runs `tests/run_vulkan_fixtures.py` on Ubuntu 24.04 with Mesa's lavapipe software driver and the Khronos
+validation layer. It executes the authored write-back shader, copy-span and seven offscreen aspect/crop cases;
+missing devices, skipped cases and validation errors fail the job. This is CPU Vulkan execution, not hardware GPU
+coverage, a swapchain or a game run. The ordinary source checks keep their GPU opt-ins/skips for machines without Vulkan.
 
 ### Checks that need your dump or a run
 
