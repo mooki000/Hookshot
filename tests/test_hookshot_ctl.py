@@ -553,6 +553,57 @@ class HookshotCtl(unittest.TestCase):
         self.assertFalse(os.path.exists(self.sock))
 
 
+class BusyPipe(unittest.TestCase):
+    """The Windows branch of the client's connect, with open() stood in (runs on every system): a busy pipe is waited for
+    whether it arrives as winerror 231 or, as open() reports it through the C runtime, as EINVAL without a winerror; a
+    pipe that does not exist is not waited for"""
+
+    def connect(self, errors, timeout=5.0):
+        import builtins
+        import importlib.util
+        import io
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("hookshot_ctl_busy_pipe", CTL)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        opened = []
+
+        def fake_open(name, mode="r", buffering=-1):
+            opened.append(name)
+            if errors:
+                raise errors.pop(0)
+            return io.BytesIO()
+
+        with mock.patch.object(module, "WINDOWS", True), mock.patch.object(builtins, "open", fake_open), \
+                mock.patch.object(module.time, "sleep", lambda seconds: None):
+            try:
+                return module.Bridge("hookshot-busy-test", timeout=timeout), opened, None
+            except module.Failed as e:
+                return None, opened, e
+
+    def test_a_busy_pipe_is_waited_for_in_both_forms(self):
+        named = OSError(22, "Invalid argument")
+        named.winerror = 231
+        bridge, opened, failed = self.connect([OSError(22, "Invalid argument"), OSError(22, "Invalid argument"), named])
+        self.assertIsNone(failed)
+        self.assertIsNotNone(bridge)
+        self.assertEqual(opened, ["\\\\.\\pipe\\hookshot-busy-test"] * 4)
+
+    def test_a_missing_pipe_is_not_waited_for(self):
+        bridge, opened, failed = self.connect([OSError(2, "No such file or directory")])
+        self.assertIsNone(bridge)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(failed.code, 2)
+        self.assertIn("no game listens", str(failed))
+
+    def test_a_pipe_that_stays_busy_fails_at_the_deadline(self):
+        bridge, opened, failed = self.connect([OSError(22, "Invalid argument")] * 4, timeout=-1.0)
+        self.assertIsNone(bridge)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(failed.code, 2)
+
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--source-root", type=Path, default=ROOT)
