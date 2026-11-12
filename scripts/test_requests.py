@@ -139,11 +139,17 @@ def until_time(text):
     return calendar.timegm(time.strptime(m.group(1) + " " + m.group(2), "%Y-%m-%d %H:%M"))
 
 
+def clear_claim(t, user):
+    t["claims"].pop(user, None)
+    t.get("claim_commits", {}).pop(user, None)
+    t.get("claim_heads", {}).pop(user, None)
+
+
 def expire(t, ts):
     """Drop the claims that ran out by ts."""
     for user, until in sorted(t["claims"].items(), key=lambda kv: kv[1]):
         if until <= ts:
-            del t["claims"][user]
+            clear_claim(t, user)
             t["history"].append((until, user, "expired"))
 
 
@@ -202,12 +208,12 @@ def replay(events, now=None):
                     t.get("claim_heads", {}).pop(sender, None)
             action = "renew" if mine else "claim"
         elif action == "release" and mine:
-            del t["claims"][sender]
+            clear_claim(t, sender)
         elif action == "done" and result:
             link = COMMENT_URL.match(rest)
             if not link or t["pr"] and int(link.group(1)) != t["pr"]:
                 continue
-            t["claims"].pop(sender, None)
+            clear_claim(t, sender)
             t["results"][sender] = {"result": result, "comment": rest, "time": ts}
             if commit:
                 t["results"][sender]["commit"] = commit
@@ -217,6 +223,8 @@ def replay(events, now=None):
             t.update(commit=rest.lower(), requested_head=head or rest.lower())
         elif action == "cancel" and sender == t["requester"]:
             t["status"], t["claims"] = "closed", {}
+            t.get("claim_commits", {}).clear()
+            t.get("claim_heads", {}).clear()
         else:
             continue
         if head:
@@ -617,7 +625,7 @@ def cmd_done(args, config):
         return refuse("that comment is on #%s, the request is for #%s" % (link.group(1), t["pr"]))
     commit = args.commit or t.get("claim_commits", {}).get(config["user_id"])
     if t.get("commit") and not commit:
-        return refuse("name the tested commit with --commit (no commit recorded at claim time)")
+        return refuse("name the tested commit with --commit (no live claim with a recorded commit)")
     text = "%s %s done %s: %s" % (MARK, t["id"], args.result, url)
     detail, info = "", None
     if t["pr"]:
@@ -703,7 +711,7 @@ def main(argv=None):
     p.add_argument("id")
     p.add_argument("--result", required=True, choices=("pass", "fail", "mixed"))
     p.add_argument("--comment", required=True)
-    p.add_argument("--commit", type=commit_arg, help="commit tested (default: the one recorded at claim time)")
+    p.add_argument("--commit", type=commit_arg, help="commit tested (default: the one recorded for your live claim)")
     p = sub.add_parser("update", help="move your open request to another commit; keep claims and past results")
     p.add_argument("id")
     p.add_argument("--commit", required=True, type=commit_arg, help="new commit to test (7 to 40 hex characters)")

@@ -669,6 +669,23 @@ def test_verify_membership():
             GITHUB.clear()
 
 
+def test_claim_commit_lifetime():
+    requested = ev("ann", 0, REQ["body"] + "\nCommit: %s\nHead: %s" % (HEAD, HEAD))
+    claimed = ev("bob", 1, "%s T-7KQ2 claim: %s\nCommit: %s\nHead: %s" % (T, until(61), HEAD, HEAD))
+    for ending, minute in (([], 62), ([ev("bob", 2, "%s T-7KQ2 release" % T)], 3),
+                           ([ev("ann", 2, "%s T-7KQ2 cancel" % T)], 3)):
+        events = [requested, claimed] + ending
+        card = tr.replay(events, now=at(minute))["T-7KQ2"]
+        check(BOB not in card["claims"] and BOB not in card.get("claim_commits", {})
+              and BOB not in card.get("claim_heads", {}), "ending a claim clears its commit and head snapshots")
+        if card["status"] == "open":
+            code, sent, _ = run(events, "bob", "done", "T-7KQ2", "--result", "pass", "--comment", COMMENT)
+            check(code == 3 and not sent and "no live claim" in STDERR, "a gone claim cannot supply a done default")
+            code, _, _ = run(events, "bob", "done", "T-7KQ2", "--commit", HEAD,
+                              "--result", "pass", "--comment", COMMENT)
+            check(code == 0, "a tester can still name the built commit after a claim ends")
+
+
 def test_old_client():
     old = load(args.old_source, "old_test_requests")
     events = []
@@ -702,7 +719,7 @@ def test_old_client():
 tests = (test_parse, test_request, test_claims, test_done_cancel, test_order, test_commands, test_approval,
          test_request_head, test_moved_head, test_done_commit, test_explicit_commit, test_update_commit,
          test_old_card, test_list_calls, test_done_unreachable, test_request_unreachable, test_github_head,
-         test_json_current_results, test_request_membership, test_verify_membership)
+         test_json_current_results, test_request_membership, test_verify_membership, test_claim_commit_lifetime)
 if args.old_source:
     tests += (test_old_client,)
 if args.test:

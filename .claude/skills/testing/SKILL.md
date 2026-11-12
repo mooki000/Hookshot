@@ -104,7 +104,8 @@ python -I scripts/test_requests.py done T-XXXX --commit <built-sha> --result pas
 ```
 
 Name the commit actually built in `done --commit`, even if the head or the card changed while testing. Without it,
-`done` uses the commit recorded at claim time. `--result` is `pass`, `fail` or `mixed`; the link must be a comment on
+`done` uses the commit recorded for your live claim. After release or expiry, name the commit explicitly.
+`--result` is `pass`, `fail` or `mixed`; the link must be a comment on
 the request's PR. An older commit's result is labelled as such, not a test of the new head. The separate Discord
 relay needs support for these fields; use `show` and the comment to check the commit if the card omits it.
 If GitHub cannot be reached, `done` still records the tested commit and says its head comparison was unavailable.

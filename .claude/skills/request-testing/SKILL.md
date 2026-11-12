@@ -75,7 +75,7 @@ python -I scripts/test_requests.py update T-XXXX --commit <new-sha>
   `show` checks one PR. A moved head blocks unattended claims; confirm the existing pin explicitly with the tester,
   or use `update --commit <new-sha>` to request the new commit.
 - Testers must build the card's commit and name the actual build with `done --commit <built-sha>`; the default is the
-  commit recorded at claim time, not a later head.
+  commit recorded for their live claim, not a later head. Release and expiry clear that default; then name the SHA.
 
 ## 3. Close it
 

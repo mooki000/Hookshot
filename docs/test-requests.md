@@ -120,8 +120,9 @@ Ask the requester which is wanted; only after confirmation use `claim T-7KQ2 --c
 an `update`. An unattended loop must skip this card, never supply confirmation for itself. The card is **not**
 closed or moved automatically. `verify` also stops and releases a claim if the head changed after it was claimed.
 
-`done --commit <sha>` records what you actually built. Without it, `done` uses the commit recorded for your last
-claim, even if the claim expired or the requester updated the card while you were testing. A result for a different
+`done --commit <sha>` records what you actually built. Without it, `done` uses the commit recorded for your live
+claim, even if the requester updated the card while you were testing. After release or expiry, name the commit
+explicitly; the claim's saved commit is cleared. A result for a different
 commit from the head at reporting time says "tested an earlier commit"; this is a comparison, not an ancestry check
 (a force-push can also make the commits differ). A pinned card with no recorded claim commit needs `--commit`.
 Old cards and messages still work; results from an old client that did not record a commit are not credited to a
