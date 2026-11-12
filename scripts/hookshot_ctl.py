@@ -32,6 +32,7 @@ The socket defaults to $HOS_CONTROL. Plain lines by default, --json for the repl
 """
 import argparse
 import contextlib
+import functools
 import math
 import json
 import os
@@ -55,6 +56,17 @@ class Failed(Exception):
     def __init__(self, message, code=1):
         super().__init__(message)
         self.code = code
+
+
+def session_call(function):
+    """The callable session API has the same expected-error contract as the command line"""
+    @functools.wraps(function)
+    def call(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except (OSError, ValueError, TypeError, KeyError) as e:
+            raise Failed(str(e), 2) from e
+    return call
 
 
 class Bridge:
@@ -480,10 +492,23 @@ def plain_tree(path):
     for top, dirs, files in os.walk(path):
         for n in [top] + [os.path.join(top, d) for d in dirs] + [os.path.join(top, f) for f in files]:
             st = os.lstat(n)
-            if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+            if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)) or \
+                    getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
                 raise Failed("--save: %s is a link or not a plain file: refused" % n, 2)
 
 
+def plain_parents(path):
+    """Check actual directory entries, not path spellings: a Windows short name is not a link"""
+    for parent in (Path(path), *Path(path).parents):
+        try:
+            st = parent.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+            raise Failed("--save: %s is a link or reparse point: refused" % parent, 2)
+
+
+@session_call
 def copy_save(src, data=None, slot=None, user=None):
     """A save folder (account.sav, option.sav, slot_NN/) copied to where the game reads it in the data folder; with slot,
     that slot alone (so Continue loads it). The source is only read, and holds plain files and folders only (no links).
@@ -503,11 +528,13 @@ def copy_save(src, data=None, slot=None, user=None):
         if slot not in slots:
             raise Failed("--save: %s has no %s (it has %s)" % (src, slot, ", ".join(slots)), 2)
     dest = os.path.join(os.path.abspath(user or os.path.join(data, "hookshot")), "save", SAVE_USER)
+    plain_parents(dest)
+    source_real, dest_real = (os.path.normcase(os.path.realpath(p)) for p in (src, dest))
     try:
-        overlap = os.path.commonpath([src, dest]) in (src, dest)
+        overlap = os.path.commonpath([source_real, dest_real]) in (source_real, dest_real)
     except ValueError:   # (different Windows drives cannot overlap)
         overlap = False
-    if os.path.normcase(os.path.realpath(dest)) != os.path.normcase(dest) or overlap:
+    if overlap:
         raise Failed("--save: source and destination must be separate plain folders", 2)
     if os.path.exists(dest) and os.listdir(dest):
         raise Failed("--save: %s already holds saves: give an empty --data (or none: the run folder's own)" % dest, 2)
@@ -596,6 +623,18 @@ def same_process(pid, birth):
     return birth is not None and process_start(pid) == birth
 
 
+def owners_alive(info):
+    return any(same_process(**info[name]) for name in ("owner", "launcher") if info.get(name))
+
+
+def wait_owners(session, timeout=15):
+    deadline = time.monotonic() + timeout
+    while owners_alive(session.info()):
+        if time.monotonic() >= deadline:
+            raise Failed("game exited, but its owner or wrapper has not exited: %s" % session.folder, 3)
+        time.sleep(0.02)
+
+
 def write_json(path, value):
     tmp = Path(str(path) + "." + uuid.uuid4().hex + ".tmp")
     try:
@@ -631,6 +670,7 @@ def runs_root():
     return Path.cwd() / "work" / "control-runs"
 
 
+@session_call
 def list_runs(root=None):
     root = Path(root) if root else runs_root()
     return [Session(p.parent).info() for p in sorted(root.glob("*/manifest.json"))]
@@ -639,10 +679,12 @@ def list_runs(root=None):
 class Session:
     """A durable run created by this client; a surviving supervisor, not an attaching caller, owns its process"""
 
+    @session_call
     def __init__(self, folder):
         self.folder = Path(folder).resolve()
         self.manifest = self.folder / "manifest.json"
 
+    @session_call
     def info(self):
         with run_lock(self.folder):
             return self._read()
@@ -654,6 +696,7 @@ class Session:
             raise Failed("unsupported run manifest version", 2)
         return value
 
+    @session_call
     def update(self, **fields):
         with run_lock(self.folder):
             value = self._read()
@@ -662,17 +705,20 @@ class Session:
         return value
 
     @classmethod
+    @session_call
     def attach(cls, folder):
         session = cls(folder)
         session.require_live()
         return session
 
+    @session_call
     def require_live(self):
         info = self.info()
         if not same_process(info["pid"], info["process_start"]):
             raise Failed("run's game is gone or its pid was reused: %s" % self.folder, 2)
         return info
 
+    @session_call
     def connect(self, timeout=10):
         return Bridge(self.require_live()["socket"], timeout, session=self)
 
@@ -696,6 +742,7 @@ class Session:
             value["artifacts"].append(artifact)
             write_json(self.manifest, value)
 
+    @session_call
     def request(self, cmd, timeout=None, **args):
         b = self.connect()
         try:
@@ -703,11 +750,12 @@ class Session:
         finally:
             b.close()
 
+    @session_call
     def finish(self):
         """Mark an orphaned, dead run; only its supervisor can know an exit code"""
         with run_lock(self.folder):
             info = self._read()
-            if same_process(info["pid"], info["process_start"]) or same_process(**info["owner"]):
+            if same_process(info["pid"], info["process_start"]) or owners_alive(info):
                 raise Failed("run still has a live game or owner; use stop", 2)
             if info["state"] not in ("finished", "failed"):
                 info.update(state="finished", ended_at=utc_now(), stop_method="observed-exit", save_drain="unknown",
@@ -715,31 +763,33 @@ class Session:
                 write_json(self.manifest, info)
         return info
 
+    @session_call
     def stop(self, timeout=10, terminate=False):
         """Ask the original supervisor to quit and reap its child; never signal a pid read from a manifest"""
         if not math.isfinite(timeout) or timeout <= 0:
             raise Failed("stop timeout must be positive seconds", 2)
+        request = None
         with run_lock(self.folder):
             info = self._read()
-            if info["state"] in ("finished", "failed"):
-                return info
-            if not same_process(**info["owner"]):
-                raise Failed("the run's owner is gone; an attached client will not kill its game", 2)
-            if not same_process(info["pid"], info["process_start"]):
-                raise Failed("run's game is gone or its pid was reused", 2)
-            if info.get("stop_request"):
-                raise Failed("a stop is already being waited for", 2)
-            request = {"id": uuid.uuid4().hex, "timeout": timeout, "terminate": terminate,
-                       "pid": info["pid"], "process_start": info["process_start"]}
-            info["stop_request"] = request
-            write_json(self.manifest, info)
+            if info["state"] not in ("finished", "failed"):
+                if not same_process(**info["owner"]):
+                    raise Failed("the run's owner is gone; an attached client will not kill its game", 2)
+                if not same_process(info["pid"], info["process_start"]):
+                    raise Failed("run's game is gone or its pid was reused", 2)
+                if info.get("stop_request"):
+                    raise Failed("a stop is already being waited for", 2)
+                request = {"id": uuid.uuid4().hex, "timeout": timeout, "terminate": terminate,
+                           "pid": info["pid"], "process_start": info["process_start"]}
+                info["stop_request"] = request
+                write_json(self.manifest, info)
         deadline = time.monotonic() + timeout + 15
         while True:
             info = self.info()
             if info["state"] in ("finished", "failed"):
+                wait_owners(self, max(0, deadline - time.monotonic()))
                 return info
             result = info.get("stop_result", {})
-            if result.get("id") == request["id"] and not result["process_exited"]:
+            if request and result.get("id") == request["id"] and not result["process_exited"]:
                 return info
             if not same_process(**info["owner"]):
                 raise Failed("run owner ended without an exit receipt; inspect the run and use finish", 2)
@@ -747,6 +797,7 @@ class Session:
                 raise Failed("no stop receipt yet: %s (the run remains owned)" % self.folder, 3)
             time.sleep(0.05)
 
+    @session_call
     def log(self, lines=100, since=None, limit=65536):
         """A byte cursor into this run's append-only UTF-8 log; every read and returned text is bounded"""
         if not 1 <= limit <= LOG_LIMIT or not 0 <= lines <= 10000 or (since is not None and since < 0):
@@ -766,6 +817,7 @@ class Session:
         return {"text": data.decode("utf-8", "replace"), "cursor": cursor, "start": start,
                 "more": cursor < size, "truncated": start > 0 if since is None else False}
 
+    @session_call
     def expect_log(self, text, since, timeout=10, regex=False, limit=65536):
         if not text or len(text) > 4096 or not math.isfinite(timeout) or timeout <= 0:
             raise Failed("log expect: a pattern of 1..4096 characters and a positive timeout", 2)
@@ -870,7 +922,7 @@ def supervise(folder):
             raise Failed("launch cancelled before admission", 3)
         with open(info["log"], "ab", buffering=0) as out:
             process = subprocess.Popen(info["command"], cwd=info["cwd"], env=dict(os.environ, **info["environment"]),
-                                       stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+                                       stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, close_fds=True)
         birth = process_start(process.pid)
         info = session.update(pid=process.pid, process_start=birth, started_at=utc_now())
         reply = wait_ready(session, info["ready"], info["ready_timeout"], process)
@@ -901,6 +953,7 @@ def supervise(folder):
     return code
 
 
+@session_call
 def start_session(game_dir, *, run=None, root=None, exe=None, image=None, romfs=None, user=None, cwd=None, data=None,
                   save=None, slot=None, profile="default", headless=False, sock=None, env=None, ready="bridge",
                   timeout=600, wrapper=None):
@@ -995,8 +1048,14 @@ def start_session(game_dir, *, run=None, root=None, exe=None, image=None, romfs=
                                  "--run", str(folder), "_supervise"]
     flags = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS} if WINDOWS \
         else {"start_new_session": True}
-    with (folder / "owner.log").open("ab") as out:
-        owner = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **flags)
+    try:
+        with (folder / "owner.log").open("ab") as out:
+            owner = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                     close_fds=True, **flags)
+    except OSError as e:
+        session.update(state="failed", error=str(e), error_code=2, ended_at=utc_now(), process_exited=True)
+        raise
+    session.update(launcher={"pid": owner.pid, "birth": process_start(owner.pid)})
     import threading
     threading.Thread(target=owner.wait, daemon=True).start()   # (reap it if this caller outlives the supervisor)
     try:
@@ -1005,6 +1064,7 @@ def start_session(game_dir, *, run=None, root=None, exe=None, image=None, romfs=
             if info["state"] == "running":
                 return session
             if info["state"] == "failed":
+                wait_owners(session)
                 raise Failed(info["error"], info["error_code"])
             if owner.poll() is not None:
                 error = "launch owner exited %s; see %s" % (owner.returncode, folder / "owner.log")
