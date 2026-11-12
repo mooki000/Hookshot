@@ -444,7 +444,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   For one run, set `HOS_OUTPUT_RES` to a size, such as `HOS_OUTPUT_RES=3840x2160`.
 - **Ultrawide menus:** the centred modes keep the pause and map menus in the middle 16:9, with blurred sides or
   black bars. Loading fades still cover the whole picture so the scene is hidden while it loads. The loading icon
-  shares that full-width layout and is stretched on an ultrawide screen, as in Full width mode.
+  shares that full-width layout: it is stretched and moves outside the middle 16:9. In a centred mode, the side
+  effect also blurs it or hides it behind the black bar. Keeping the icon centred and sharp needs a separate
+  pane-level change; the whole-layout keep mask cannot separate it from the fade.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
   picture, set the Output resolution to your screen's, and the row shows "Not needed (window = output)". It and
   **Sharpness** also work when Frame generation is Off.
