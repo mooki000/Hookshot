@@ -218,15 +218,6 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_FIFO=1`, `RX_VK_IMMEDIATE=1` | V-Sync On (FIFO) or Off (immediate) for one run, over the menu's V-Sync row |
 | `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
 
-The mesh compute fallback draws its generated records through a vertex shader without vertex buffers.
-Its graphics pipelines keep dynamic primitive topology and primitive restart, but do not require a
-dynamic vertex binding stride (#2494, tracked in #1001). Ordinary vertex-input pipelines still use
-dynamic stride; native mesh pipelines do not use these three input-assembly/vertex-input states.
-Binding the fallback's static-stride pipeline invalidates dynamic strides. The draw path drops both
-vertex-bind skip caches at that bind, so the next ordinary draw sets its strides again even if the
-buffers are unchanged. Resolved buffer references remain cached; buffer handles, offsets and sizes
-are not invalidated by pipeline binding. Runtime fallback programs do not use pipeline libraries.
-
 ### Building
 
 A build reads and writes tens of gigabytes. When the game folder or the build files folder is on a hard drive,
