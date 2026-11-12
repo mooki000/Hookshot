@@ -934,7 +934,7 @@ void cap_buf_free(VkBuffer buffer, VmaAllocation alloc, void* map, uint64_t size
     if (from_worker && cap_shutting_down.load()) return;
     // (hookshot, RX 7800 XT: buffers up to 256 MB are kept for the next capture, not only up to 64 MB: a new one costs ~100 ms of
     // vkAllocateMemory on AMD's driver. RX_VK_CAPTURE_KEEP_OLD=1: as before)
-    static const bool keep_old = getenv("RX_VK_CAPTURE_KEEP_OLD") != nullptr;
+    static const bool keep_old = env_on("RX_VK_CAPTURE_KEEP_OLD");
     if (cap_free.size() < 12 && size <= (keep_old ? 64ull << 20 : 256ull << 20) &&
         cap_free_bytes + size <= std::min<uint64_t>(cap_spare_max(), keep_old ? ~0ull : 768ull << 20)) {
         cap_free.push_back({buffer, alloc, map, size});
@@ -957,7 +957,7 @@ uint64_t cap_buf_size(uint64_t need) {
     while (s < need && s < (16ull << 20)) s <<= 1;
     if (s >= need) return s;
     // (hookshot: above 16 MB in classes of 32, 64, 128 and 256 MB, so that a buffer given back fits the next capture)
-    static const bool keep_old = getenv("RX_VK_CAPTURE_KEEP_OLD") != nullptr;
+    static const bool keep_old = env_on("RX_VK_CAPTURE_KEEP_OLD");
     if (!keep_old)
         for (const uint64_t cm : {32, 64, 128, 192, 256})   // (stutter: 192 added, a 130-158 MB capture took the 256 MB class)
             if ((uint64_t)cm << 20 >= need) return (uint64_t)cm << 20;
@@ -992,7 +992,7 @@ void cap_spare_make(uint64_t size, int index) {
     VmaAllocation a = nullptr;
     void* m = nullptr;
     const auto t0 = std::chrono::steady_clock::now();
-    if (!cap_shutting_down.load() && create_buffer_cached(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, b, a, &m, !getenv("RX_VK_CAP_BLOCKS")) && m) {
+    if (!cap_shutting_down.load() && create_buffer_cached(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, b, a, &m, !env_on("RX_VK_CAP_BLOCKS")) && m) {
         static std::atomic<int> told{0};
         if (told++ < 8)
             logf("vk: a %llu MB capture buffer made ahead in %.1f ms, off the game's thread (RX_VK_CAP_PREWARM)", (unsigned long long)(size >> 20),
