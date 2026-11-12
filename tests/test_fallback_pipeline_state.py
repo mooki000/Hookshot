@@ -4,7 +4,10 @@
 The fallback vertex stage reads records by vertex index, without vertex bindings. It must
 not require dynamic binding stride (VUID-vkCmdDrawIndirect-pStrides-04913), but still needs
 dynamic topology and primitive restart. Ordinary vertex input keeps all three states;
-native mesh pipelines use none. Check whole pipelines and the vertex-input library.
+native mesh pipelines use none. Check whole pipelines and vertex-input library construction
+(the fallback library case is called directly here; runtime fallback programs do not use GPL).
+Also replay the production pipeline-bind and vertex-cache decisions for ordinary, fallback,
+ordinary draws with the same buffers. The Vulkan state lifetime is modeled, not driver-tested.
 
 python -I -B tests/test_fallback_pipeline_state.py --cxx g++ --headers <Vulkan include>
 --source <vk_draw.cpp> also runs the same checks against an unfixed or mutated source.
@@ -18,6 +21,7 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 ROOT = Path(__file__).resolve().parents[1]
 
 HEAD = r"""
+#define _CRT_SECURE_NO_WARNINGS
 #include <vulkan/vulkan.h>
 #include <algorithm>
 #include <atomic>
@@ -26,6 +30,7 @@ HEAD = r"""
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 #include "compat/hookshot_env.h"
 
@@ -56,6 +61,7 @@ struct NvnState {
     nvn_va_st vattr[16]{};
     int nvattr = 0;
     struct Stream { uint32_t stride = 0, divisor = 0; } vstream[16];
+    struct Buffer { uint64_t address = 0, size = 0; } vbuf[16];
     bool depth_clamp = false;
     struct { uint32_t mode = 2; } poly;
     struct { bool a2c = false; } ms;
@@ -111,6 +117,7 @@ struct Observed {
     std::vector<VkDynamicState> dynamic;
     std::vector<VkShaderStageFlagBits> stages;
 } observed;
+std::vector<std::pair<VkPipeline, bool>> stride_modes;
 VkResult graphics_with(VkPipelineCache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* out) {
     ++observed.calls;
     observed.vertex_input = ci->pVertexInputState != nullptr;
@@ -124,11 +131,64 @@ VkResult graphics_with(VkPipelineCache, const VkGraphicsPipelineCreateInfo* ci, 
     observed.dynamic.assign(ci->pDynamicState->pDynamicStates,
                             ci->pDynamicState->pDynamicStates + ci->pDynamicState->dynamicStateCount);
     for (uint32_t i = 0; i < ci->stageCount; ++i) observed.stages.push_back(ci->pStages[i].stage);
-    *out = reinterpret_cast<VkPipeline>(uintptr_t{1});
+    *out = reinterpret_cast<VkPipeline>(uintptr_t{stride_modes.size() + 1});
+    const bool static_stride = ci->pVertexInputState &&
+        std::find(observed.dynamic.begin(), observed.dynamic.end(), VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE) == observed.dynamic.end();
+    stride_modes.emplace_back(*out, static_stride);
     return VK_SUCCESS;
 }
 /* VERTEX_INFO */
 /* BUILD_GRAPHICS */
+"""
+
+CACHE = r"""
+// Replay actual cache decisions; buffer resolution and Vulkan calls are authored stand-ins.
+#define FINE_SCOPE(...)
+#define FINE_N(...)
+VkPipeline last_pipeline = VK_NULL_HANDLE;
+/* LAST_VB */
+LastVb last_vb{};
+bool last_vb_valid = false;
+/* VERTEX_SET */
+VertexSet vertex_set{};
+struct BufferRef {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+    explicit operator bool() const { return buffer != VK_NULL_HANDLE; }
+};
+/* KEPT_VERTEX */
+KeptVertex kept_vb[16]{};
+/* VERTEX_BIND_REUSE */
+/* VERTEX_SET_SAME */
+unsigned vertex_binds = 0, pipeline_binds = 0, buffer_lookups = 0, binding_errors = 0;
+bool model_stride_valid = false;
+VkBuffer zero_buffer = reinterpret_cast<VkBuffer>(uintptr_t{1});
+uint64_t gpu_bind_stamp() { return 1; }
+BufferRef gpu_buffer_bind(uint64_t addr, uint64_t, bool) {
+    ++buffer_lookups;
+    return {reinterpret_cast<VkBuffer>(static_cast<uintptr_t>(addr)), 16};
+}
+VKAPI_ATTR void VKAPI_CALL vkCmdBindPipeline(VkCommandBuffer, VkPipelineBindPoint point, VkPipeline pl) {
+    ++pipeline_binds;
+    if (point != VK_PIPELINE_BIND_POINT_GRAPHICS) ++binding_errors;
+    const auto found = std::find_if(stride_modes.begin(), stride_modes.end(), [pl](const auto& item) { return item.first == pl; });
+    if (found == stride_modes.end()) ++binding_errors;
+    else if (found->second) model_stride_valid = false;
+}
+VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers2(VkCommandBuffer, uint32_t first, uint32_t count,
+    const VkBuffer* buffers, const VkDeviceSize* offsets, const VkDeviceSize* sizes, const VkDeviceSize* strides) {
+    ++vertex_binds;
+    if (first != 0 || count != 16 || !buffers || !offsets || !sizes || !strides) ++binding_errors;
+    else if (buffers[2] != reinterpret_cast<VkBuffer>(uintptr_t{0x1000}) ||
+             offsets[2] != 16 || sizes[2] != 64 || strides[2] != 16) ++binding_errors;
+    model_stride_valid = true;
+}
+void replay_vertex_binding(const Program& p, VkPipeline pl, const NvnState& s) {
+    VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(uintptr_t{1});
+    /* BIND_PIPELINE */
+    if (p.mesh || p.fallback) return; // These draw paths return before ordinary vertex-buffer binding.
+    /* BIND_VERTICES */
+}
 """
 
 MAIN = r"""
@@ -152,6 +212,7 @@ int main() {
     state.vstream[2].stride = 16;
     Targets targets{};
     dev.props.vendorID = 0x8086;
+    VkPipeline pipelines[3]{};
     for (int kind = 0; kind < 3; ++kind) {
         const char* name = kind == 0 ? "ordinary" : kind == 1 ? "native mesh" : "fallback";
         Program p;
@@ -169,6 +230,7 @@ int main() {
             if (p.mesh && part == 0) continue; // Native mesh has no vertex-input library.
             observed = {};
             const auto pipeline = build_graphics(p, state, targets, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, part, nullptr);
+            if (part == -1) pipelines[kind] = pipeline;
             check(pipeline != VK_NULL_HANDLE && observed.calls == 1, name, part, "pipeline creation reached once");
             check(observed.vertex_input == !p.mesh, name, part, "vertex-input state presence");
             check(observed.input_assembly == !p.mesh, name, part, "input-assembly state presence");
@@ -191,8 +253,27 @@ int main() {
             check(observed.stages == expected, name, part, "graphics stages preserved without fallback compute stages");
         }
     }
+    state.vbuf[2].address = 0x1000;
+    state.vbuf[2].size = 64;
+    Program ordinary, fallback, native_mesh;
+    fallback.fallback = true;
+    native_mesh.mesh = true;
+    replay_vertex_binding(ordinary, pipelines[0], state);
+    check(vertex_binds == 1 && model_stride_valid, "sequence", -1, "first ordinary draw sets strides");
+    replay_vertex_binding(fallback, pipelines[2], state);
+    check(vertex_binds == 1 && !model_stride_valid, "sequence", -1, "fallback invalidates stride without a vertex bind");
+    replay_vertex_binding(ordinary, pipelines[0], state);
+    check(vertex_binds == 2 && model_stride_valid, "sequence", -1, "third draw rebinds identical buffers after fallback");
+    check(buffer_lookups == 1, "sequence", -1, "resolved buffer reference remains cached");
+    replay_vertex_binding(ordinary, pipelines[0], state);
+    check(vertex_binds == 2 && pipeline_binds == 3, "sequence", -1, "repeated ordinary draw still skips redundant binds");
+    replay_vertex_binding(native_mesh, pipelines[1], state);
+    replay_vertex_binding(ordinary, pipelines[0], state);
+    check(vertex_binds == 2 && model_stride_valid, "sequence", -1, "native mesh without vertex-input state preserves strides");
+    check(binding_errors == 0, "sequence", -1, "intercepted bind arguments are intact");
     if (failures) return 1;
     std::puts("fallback pipeline state: ordinary, native mesh and fallback pass (5 pipeline creations)");
+    std::puts("vertex cache sequence: ordinary/fallback/ordinary rebinds; ordinary/native reuse retained");
     return 0;
 }
 """
@@ -219,9 +300,21 @@ def main():
     fixture = fixture.replace("/* VERTEX_INFO */", block(source, "const Shader::Info* vertex_info("))
     fixture = fixture.replace("/* BUILD_GRAPHICS */", block(source, "VkPipeline build_graphics(const Program& p, "
                               "const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, bool* cold) {"))
+    cache = CACHE
+    for token, marker in [
+            ("LAST_VB", "struct LastVb {"), ("VERTEX_SET", "struct VertexSet {"),
+            ("KEPT_VERTEX", "struct KeptVertex {"),
+            ("VERTEX_BIND_REUSE", "bool vertex_bind_reuse("),
+            ("VERTEX_SET_SAME", "bool vertex_set_same("),
+            ("BIND_PIPELINE", "if (pl != last_pipeline) {")]:
+        extracted = block(source, marker) + (";" if marker.startswith("struct ") else "")
+        cache = cache.replace("/* " + token + " */", extracted)
+    start = source.index("    uint64_t vaddr[16]{};")
+    end = source.index("    if (g_fine) fine_ns[FT_VERTEX]", start)
+    cache = cache.replace("/* BIND_VERTICES */", source[start:end])
     with tempfile.TemporaryDirectory(prefix="hookshot-fallback-pipeline-") as temp:
         cpp, exe = Path(temp) / "pipeline.cpp", Path(temp) / "pipeline.exe"
-        cpp.write_text(fixture + MAIN, encoding="utf-8")
+        cpp.write_text(fixture + cache + MAIN, encoding="utf-8")
         subprocess.run([args.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror",
                         "-Wno-missing-field-initializers", "-I", str(args.headers), "-I", str(ROOT / "gpu/vk"),
                         str(cpp), "-o", str(exe)], check=True)
