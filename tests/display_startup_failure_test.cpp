@@ -41,6 +41,7 @@ static void hos_log(const char* format, ...) {
     logs.emplace_back(text);
 }
 [[maybe_unused]] static void hos_log_flush() { ++flushes; }
+void hos_crash_clean_end(void) { require(flushes != 0, "clean-end mark before log flush"); }
 static const char* hos_sdl_error() { return "authored missing Vulkan loader"; }
 static int hos_sdl_load() { ++loads; return mode == "load_failure" || mode.starts_with("prepare_") ? 0 : 3; }
 static void hos_sdl_identity(const char*, const char*) {}

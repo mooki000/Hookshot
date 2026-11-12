@@ -2,6 +2,8 @@
    commit (TOTK commits its whole 4 GB window up front; MKW's 512 GB window is only reserved), and stand-ins for the
    hooks of files not taken into host/ (the renderer and display, the profiler, mods, TOTK's own patches). */
 #include "hos.h"
+#include "hos_crash_record.h"
+#include "hos_paths.h"
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
@@ -75,7 +77,76 @@ static uint64_t peek_guest(uint64_t a) {
     return G64(a);
 }
 
+/* The independent record is complete before the legacy logger/loader/CRT calls.
+   Those CRASH lines remain unchanged and are still useful when they can run. */
+static void record_exception(EXCEPTION_POINTERS *info) {
+    Ctx *c = hos_ctx();
+    HosThread *thread = hos_self();
+    const EXCEPTION_RECORD *rec = info->ExceptionRecord;
+    HosCrashContext context = {0};
+    context.reason = "unhandled exception";
+    context.thread = thread ? hos_thread_name(thread) : "host";
+    context.code = rec->ExceptionCode;
+    context.pc = (uintptr_t)info->ContextRecord->Rip;
+    context.sp = (uintptr_t)info->ContextRecord->Rsp;
+    context.fp = (uintptr_t)info->ContextRecord->Rbp;
+    context.fault_address = rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0;
+    context.guest_base = (uintptr_t)A64_MEM;
+    context.guest_size = HOS_GUEST_SPACE;
+    context.guest_registers = c ? c->x : NULL;
+#ifdef _WIN32
+    context.native_context = info->ContextRecord;
+    context.exception_filter = 1;
+#else
+    context.signal_number = (int)rec->ExceptionInformation[13];
+    context.signal_code = (int)(intptr_t)rec->ExceptionInformation[14];
+    if (context.signal_number) context.reason = "fatal signal";
+#endif
+    if (hos_crash_record_write(&context)) {
+#ifdef _WIN32
+        hos_crash_record_dump(info);
+#endif
+    }
+}
+
+void hos_crash_record_fatal(const uint64_t *guest_registers, const char *reason) {
+    HosThread *thread = hos_self();
+    HosCrashContext context = {0};
+    context.reason = reason;
+    context.thread = thread ? hos_thread_name(thread) : "host";
+    context.guest_base = (uintptr_t)A64_MEM;
+    context.guest_size = HOS_GUEST_SPACE;
+    context.guest_registers = guest_registers;
+#ifdef _WIN32
+    CONTEXT native;
+    RtlCaptureContext(&native);
+    context.native_context = &native;
+    context.pc = (uintptr_t)native.Rip;
+    context.sp = (uintptr_t)native.Rsp;
+    context.fp = (uintptr_t)native.Rbp;
+#else
+    context.pc = (uintptr_t)hos_crash_record_fatal;
+    context.sp = (uintptr_t)&context;
+    context.fp = (uintptr_t)__builtin_frame_address(0);
+#endif
+    hos_crash_record_write(&context);
+}
+
+/* Before log rotation, so recovery reads the last run rather than this run's
+   new log. hos_game_path_a also understands the installed bin/ layout. */
+void hos_crash_record_prepare(void) {
+    char path[4096];
+    DWORD n = hos_game_path_a(path, sizeof path);
+    if (!n || n >= sizeof path) return;
+    while (n && path[n - 1] != '/' && path[n - 1] != '\\') --n;
+    if (!n) return;
+    path[n] = 0;
+    const char *hos_version(void);
+    hos_crash_record_start(path, hos_version());
+}
+
 static LONG WINAPI report_crash(EXCEPTION_POINTERS *info) {
+    record_exception(info);
     EXCEPTION_RECORD *rec = info->ExceptionRecord;
     const uint64_t rip = info->ContextRecord->Rip;
     HMODULE mod = NULL;
