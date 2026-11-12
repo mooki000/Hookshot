@@ -100,6 +100,17 @@ def commit_field(text, name="Commit"):
     return value
 
 
+def request_fields(text):
+    """Only the appended footer is metadata; Commit/Head lines inside notes are ordinary text."""
+    lines = text.splitlines()
+    if len(lines) >= 2:
+        commit, head = commit_field(lines[-2]), commit_field(lines[-1], "Head")
+        if commit and head:
+            return "\n".join(lines[:-2]), commit, head
+    commit = commit_field(lines[-1]) if lines else None
+    return ("\n".join(lines[:-1]), commit, None) if commit else (text, None, None)
+
+
 def same_commit(a, b):
     return bool(a and b) and (a.startswith(b) or b.startswith(a))
 
@@ -170,13 +181,11 @@ def replay(events, now=None):
                 continue  # an ID is used once
             pr = PR_URL.search(rest + "\n" + more)
             needs, notes = "", []
-            commit, head = commit_field(more), commit_field(more, "Head")
+            more, commit, head = request_fields(more)
             for extra in more.splitlines():
                 extra = extra.strip()
                 if extra.lower().startswith("needs:") and not needs:
                     needs = extra[6:].strip()
-                elif commit_field(extra) or commit_field(extra, "Head"):
-                    continue
                 elif extra and not (pr and extra == pr.group(0)):
                     notes.append(extra)
             tests[tid] = {"id": tid, "requester": sender, "requested": ts, "summary": rest, "needs": needs,

@@ -191,6 +191,10 @@ lines. The first line and the comment URL stay unchanged. Old clients treat the 
 the extra claim/done lines, and ignore `update`; they cannot enforce pins. Use a current client for commit-aware
 testing. The separate relay needs the same support before it can display or act on updates.
 
+Only the final `Commit:` line and optional following `Head:` line form the request's metadata footer; earlier
+note lines with those names stay notes. On hand-written messages that exact trailing footer is reserved: put a
+literal commit note before another note, or let `request --notes` append the real footer after it.
+
 ## If something goes wrong
 
 - `not signed in` or `no longer valid`: run `python -I scripts/team_chat.py login` again.

@@ -686,6 +686,23 @@ def test_claim_commit_lifetime():
             check(code == 0, "a tester can still name the built commit after a claim ends")
 
 
+def test_request_note_fields():
+    notes = "Commit: %s\nHead: %s\nCommit: compare these builds\nHead: look at the logs" % (NEXT, NEXT)
+    events = []
+    tid = request(events, "--notes", notes)
+    card = tr.replay(events)[tid]
+    check(card["notes"] == notes and card["commit"] == HEAD and card["head"] == HEAD,
+          "metadata-looking note lines survive before the actual request footer")
+    for notes in ("Commit: %s\nHead: %s" % (NEXT, NEXT), "Commit: " + NEXT):
+        events = []
+        tid = request(events, "--notes", notes)
+        check(tr.replay(events)[tid]["notes"] == notes, "even a trailing metadata-looking note is preserved")
+    for notes in ("Commit: %s\nfollow-up text" % NEXT, "Head: " + NEXT):
+        card = tr.replay([ev("ann", 0, "%s T-7KQ2 request: notes\n%s\n%s" % (T, PR, notes))])["T-7KQ2"]
+        check(card["notes"] == notes and "commit" not in card and "head" not in card,
+              "legacy note fields outside a commit footer are not swallowed")
+
+
 def test_old_client():
     old = load(args.old_source, "old_test_requests")
     events = []
@@ -719,7 +736,8 @@ def test_old_client():
 tests = (test_parse, test_request, test_claims, test_done_cancel, test_order, test_commands, test_approval,
          test_request_head, test_moved_head, test_done_commit, test_explicit_commit, test_update_commit,
          test_old_card, test_list_calls, test_done_unreachable, test_request_unreachable, test_github_head,
-         test_json_current_results, test_request_membership, test_verify_membership, test_claim_commit_lifetime)
+         test_json_current_results, test_request_membership, test_verify_membership, test_claim_commit_lifetime,
+         test_request_note_fields)
 if args.old_source:
     tests += (test_old_client,)
 if args.test:
