@@ -468,6 +468,8 @@ it does not invent an exit code. `show` and `log` work after exit without connec
 `--user <run>/user`. These profile choices win over conflicting `--env` entries. The runtime reads that file
 **instead of** the ambient `hookshot_env.txt` (`load_hookshot_env` in `host/hos_main.c`), not as another layer.
 The profile starts fresh, or `--save FOLDER [--slot NN]` makes a plain-file copy using the existing source checks.
+An ordinary symlinked parent (such as `/home` on Linux) is allowed; source/destination overlap is checked by resolved
+paths. Existing `save/` and user-id entries inside the chosen user root must be real folders, not links.
 It refuses `--data` and `--user`: neither can redirect a test run onto the source save. The same explicit runtime
 `--user` argument makes isolation possible on Windows; the old Windows `--save` without it still refuses.
 Inherited environment, the game's own options and driver caches are not isolated by this profile.
@@ -521,6 +523,9 @@ whose log you want to observe. `--expect` requires `--since` and cannot match te
 (`--bytes`, at most 1 MiB); the tail is at most 10,000 lines. `more` means continue at `cursor`; `truncated` means the
 tail's byte bound omitted older text. Very long matches beyond the bounded search window are not promised. A cursor
 past EOF refuses, rather than treating an old cursor as a new file. No bridge log subscription is needed.
+A read ending inside a UTF-8 character leaves its at-most-three trailing bytes for the next read; `cursor` points
+before those bytes. This applies at a live log's current EOF too. Only a finished run's true EOF replaces an incomplete
+character. A byte limit smaller than one encoded character cannot advance over it; use at least four bytes for UTF-8.
 
 ### Manifest version 1
 

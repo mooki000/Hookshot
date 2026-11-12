@@ -31,6 +31,7 @@ The socket defaults to $HOS_CONTROL. Plain lines by default, --json for the repl
 1 an error reply, 2 no game or bad usage, 3 a timeout.
 """
 import argparse
+import codecs
 import contextlib
 import functools
 import math
@@ -497,15 +498,15 @@ def plain_tree(path):
                 raise Failed("--save: %s is a link or not a plain file: refused" % n, 2)
 
 
-def plain_parents(path):
-    """Check actual directory entries, not path spellings: a Windows short name is not a link"""
-    for parent in (Path(path), *Path(path).parents):
+def plain_save_dirs(root):
+    """The two entries the copier creates must be directories, not links; /home or a data root may itself be a link"""
+    for path in (Path(root) / "save", Path(root) / "save" / SAVE_USER):
         try:
-            st = parent.lstat()
+            st = path.lstat()
         except FileNotFoundError:
             continue
-        if stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
-            raise Failed("--save: %s is a link or reparse point: refused" % parent, 2)
+        if not stat.S_ISDIR(st.st_mode) or getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+            raise Failed("--save: %s is a link or not a plain folder: refused" % path, 2)
 
 
 @session_call
@@ -527,8 +528,9 @@ def copy_save(src, data=None, slot=None, user=None):
         slot = slot_name(slot)
         if slot not in slots:
             raise Failed("--save: %s has no %s (it has %s)" % (src, slot, ", ".join(slots)), 2)
-    dest = os.path.join(os.path.abspath(user or os.path.join(data, "hookshot")), "save", SAVE_USER)
-    plain_parents(dest)
+    root = os.path.abspath(user or os.path.join(data, "hookshot"))
+    dest = os.path.join(root, "save", SAVE_USER)
+    plain_save_dirs(root)
     source_real, dest_real = (os.path.normcase(os.path.realpath(p)) for p in (src, dest))
     try:
         overlap = os.path.commonpath([source_real, dest_real]) in (source_real, dest_real)
@@ -789,7 +791,7 @@ class Session:
                 wait_owners(self, max(0, deadline - time.monotonic()))
                 return info
             result = info.get("stop_result", {})
-            if request and result.get("id") == request["id"] and not result["process_exited"]:
+            if request and result.get("id") == request["id"] and not result.get("process_exited"):
                 return info
             if not same_process(**info["owner"]):
                 raise Failed("run owner ended without an exit receipt; inspect the run and use finish", 2)
@@ -802,7 +804,8 @@ class Session:
         """A byte cursor into this run's append-only UTF-8 log; every read and returned text is bounded"""
         if not 1 <= limit <= LOG_LIMIT or not 0 <= lines <= 10000 or (since is not None and since < 0):
             raise Failed("log: bytes 1..1048576, lines 0..10000, cursor >= 0", 2)
-        with open(self.info()["log"], "rb") as f:
+        info = self.info()
+        with open(info["log"], "rb") as f:
             size = os.fstat(f.fileno()).st_size
             if since is not None and since > size:
                 raise Failed("log cursor is past the end (the file was truncated?)", 2)
@@ -810,11 +813,14 @@ class Session:
             f.seek(start)
             data = f.read(min(limit, size - start))
         cursor = start + len(data)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        text = decoder.decode(data, final=cursor == size and info["state"] in ("finished", "failed"))
+        cursor -= len(decoder.getstate()[0])   # (at most three trailing bytes: the next read starts before them)
         if since is None:
             if start:
-                data = data.partition(b"\n")[2]   # (do not call a clipped first line a whole one)
-            data = b"".join(data.splitlines(keepends=True)[-lines:]) if lines else b""
-        return {"text": data.decode("utf-8", "replace"), "cursor": cursor, "start": start,
+                text = text.partition("\n")[2]   # (a clipped first line, possibly starting inside a character)
+            text = "".join(text.splitlines(keepends=True)[-lines:]) if lines else ""
+        return {"text": text, "cursor": cursor, "start": start,
                 "more": cursor < size, "truncated": start > 0 if since is None else False}
 
     @session_call
@@ -832,10 +838,11 @@ class Session:
             if (pattern.search(pending) if pattern else text in pending):
                 return dict(part, text=pending[-limit:], matched=True)
             pending = pending[-limit:]
+            advanced = part["cursor"] != cursor
             cursor = part["cursor"]
             if time.monotonic() >= deadline:
                 raise Failed("log expect timed out after cursor %d: %s" % (since, text), 3)
-            if not part["more"]:
+            if not part["more"] or not advanced:
                 time.sleep(0.05)
 
 
