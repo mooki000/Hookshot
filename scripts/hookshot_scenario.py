@@ -118,6 +118,8 @@ def validate_scenario(data):
     if "env" in launch and (not isinstance(launch["env"], dict) or
                             not all(isinstance(k, str) and isinstance(v, str) for k, v in launch["env"].items())):
         usage(0, "launch.env must be an object of string names and values")
+    if "attach" in launch and not launch["attach"].strip():
+        usage(0, "launch.attach must name a non-empty run folder")
     if "attach" in launch and set(launch) - {"attach", "ready", "timeout"}:
         usage(0, "an attached run takes only attach, ready and timeout; it is not launched or stopped")
     steps = data.get("steps")
@@ -302,6 +304,8 @@ def run_scenario(scenario, *, game_dir, out=None, wrapper=None, save=None, slot=
         usage(0, "wrapper/save/slot cannot change an attached run")
     if not attached and not game_dir:
         usage(0, "a game folder is required")
+    if attached and out is not None and Path(attached).resolve() == Path(out).resolve():
+        usage(0, "attachment and output folders must be different")
     folder = scenario_dir(out, scenario)
     transcript, artifacts = [], []
     session, failed, code, failed_step = None, None, 0, None

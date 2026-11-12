@@ -601,7 +601,8 @@ admission argv. No process scan or `force` bypass is added.
 
 To use an existing run, `launch` instead holds `{"attach":"RUN_DIR","ready":"bridge"}` (optionally `timeout`).
 The runner waits for that level too, but never stops an attached game, on success or failure. Save/wrapper overrides
-cannot be applied to an attachment.
+cannot be applied to an attachment. Empty/whitespace-only paths, an attachment that resolves to the output folder,
+and attachment mixed with owning-only launch fields are usage errors before a process or output folder is created.
 
 Every step holds exactly one verb and an object. The complete file is checked before launching; errors name the
 one-based step index (`step 0` is the file/schema/launch). Unknown fields are errors, not silently ignored.

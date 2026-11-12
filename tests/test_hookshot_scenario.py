@@ -178,6 +178,45 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
         self.assertIn("step 0", proc.stderr)
 
+    def test_attachment_validation_never_launches_or_allocates_output(self):
+        from unittest import mock
+        owning = {"exe": sys.executable, "image": str(self.fake), "romfs": str(self.folder), "cwd": str(self.folder),
+                  "user": str(self.folder), "data": str(self.folder), "save": str(self.folder), "slot": "0",
+                  "profile": "test", "headless": True, "env": {}, "stop_timeout": 1}
+        launches = [{"attach": ""}, {"attach": " \t "}]
+        launches += [dict(attach=str(self.folder), **{key: value}) for key, value in owning.items()]
+        for index, launch in enumerate(launches):
+            data = {"version": 1, "launch": launch, "steps": [{"wait": {"ms": 0}}]}
+            with self.subTest(launch=launch):
+                with self.assertRaises(self.m.control.Failed) as caught:
+                    self.m.validate_scenario(data)
+                self.assertEqual(caught.exception.code, 2)
+                out = self.folder / ("invalid-attach-%d" % index)
+                with mock.patch.object(self.m.control, "start_session") as start, \
+                        mock.patch.object(self.m.control.Session, "attach") as attach:
+                    with self.assertRaises(self.m.control.Failed) as caught:
+                        self.m.run_scenario(data, game_dir=str(self.folder), out=str(out))
+                    self.assertEqual(caught.exception.code, 2)
+                    start.assert_not_called()
+                    attach.assert_not_called()
+                self.assertFalse(out.exists())
+        # (relative and absolute spellings of the same output folder, also when Windows temp and checkout differ in drive)
+        previous = Path.cwd()
+        try:
+            os.chdir(self.folder)
+            out = self.folder / "same-folder"
+            data = {"version": 1, "launch": {"attach": "same-folder"}, "steps": [{"wait": {"ms": 0}}]}
+            with mock.patch.object(self.m.control, "start_session") as start, \
+                    mock.patch.object(self.m.control.Session, "attach") as attach:
+                with self.assertRaisesRegex(self.m.control.Failed, "step 0: attachment and output folders") as caught:
+                    self.m.run_scenario(data, game_dir=str(self.folder), out=str(out))
+                self.assertEqual(caught.exception.code, 2)
+                start.assert_not_called()
+                attach.assert_not_called()
+            self.assertFalse(out.exists())
+        finally:
+            os.chdir(previous)
+
     def test_output_collision_and_version_refuse(self):
         out = self.folder / "occupied"
         out.mkdir()
