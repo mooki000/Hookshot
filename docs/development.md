@@ -207,6 +207,7 @@ presents; `renderer_present` is the replay's count used in screenshot names. Wit
 are that file's index and origin, and statistics use its retained three-decimal millisecond intervals.
 Without that file those join columns are `na`. The clock is `headless-renderer` (CPU offscreen-submit intervals,
 not display timing) or `swapchain`; neither is a GPU-completion or input-latency measurement.
+The timestamp marks the sampling pass; different providers have their own update periods, so a row is not an atomic hardware snapshot.
 
 | Individually selectable columns (in file order) | Units and source |
 |---|---|
