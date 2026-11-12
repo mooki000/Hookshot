@@ -9,6 +9,7 @@
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
+#include "hos_stall.h"
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
@@ -1123,6 +1124,7 @@ static void oot_map_refresh(Ctx *c, int64_t now) {
     AcquireSRWLockExclusive(&oot_map_lock);
     memcpy(oot_map, map, sizeof oot_map);
     oot_flags = flags;
+    hos_stall_game_state((flags & 2) ? HOS_STALL_LOADING : (flags & 1) ? HOS_STALL_UNKNOWN : 0);
     ReleaseSRWLockExclusive(&oot_map_lock);
 }
 /* (with the map) whether an event (a cutscene, a map change's) is playing, a map is loading, Link is the child: 0 before any */
@@ -1790,6 +1792,8 @@ static int game_main(int argc, char **argv) {
         }
     }
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
+    const char *hos_report_run_id(void);
+    hos_log("run_id: %s", hos_report_run_id());
     removed_switch_notes();
     void hos_control_start(const char *version);
     hos_control_start(HOOKSHOT_VERSION);   /* (HOS_CONTROL=<socket>: the control bridge, host/control.c) */
@@ -1813,6 +1817,14 @@ static int game_main(int argc, char **argv) {
             return 3;
         }
         else if (!image) image = argv[i];
+    }
+    {
+        char root[MAX_PATH];
+        DWORD n = hos_game_path_a(root, MAX_PATH);
+        if (n && n < MAX_PATH) {
+            while (n && root[n - 1] != '/' && root[n - 1] != '\\') n--;
+            if (n) root[n] = 0, hos_stall_start(root, HOOKSHOT_VERSION);
+        }
     }
 #ifdef _WIN32
     {   /* (hookshot) the Discord status (discord_rpc.c), a game run only (a --prepare-shaders run returned above). Linux starts

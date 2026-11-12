@@ -95,6 +95,46 @@ vertex-bind skip caches at that bind, so the next ordinary draw sets its strides
 buffers are unchanged. Resolved buffer references remain cached; buffer handles, offsets and sizes
 are not invalidated by pipeline binding. Runtime fallback programs do not use pipeline libraries.
 
+### Stall records
+
+`host/hos_stall.c` writes local records independently of the menu and launcher. A reader can consume
+`bug-reports/pending/stall-<UTC>.txt` and its named `.stacks.txt`; no renderer interface change or sender
+is involved. `resumed` distinguishes a recovered hitch from an unresolved stall. The existing optional
+Windows `RX_VK_HANG_DUMP` remains unchanged: its renderer-counter test uses 20 s, has no state exclusions,
+overwrites the caller's chosen file, and re-arms after a present. Neither watcher calls the other.
+
+The separate default-on GPU timeline watcher (`vk_replay.cpp`, `RX_VK_GPU_HANG_SEC=30`) also
+stays unchanged. Its numeric no-progress warning defers host collection until that timeout plus
+10 s; `=0` does not defer it. Its terminal GPU-hang line or `vk: device lost:` permanently
+hands the incident to the device-loss/crash path instead. Tests pin all three log seams.
+
+The thresholds are conservative observations, not a classifier for every freeze:
+- 30 s in last-known gameplay: [AMD menu freezes](https://github.com/NotRexed/Hookshot/issues/996#issuecomment-6766483655)
+  can be closed after about 20 s of remaining background logs;
+  [Intel's picture hang](https://github.com/NotRexed/Hookshot/issues/999#issuecomment-6777337256) lasts over 30 s.
+  Some recover: [this AMD session](https://github.com/NotRexed/Hookshot/issues/996#issuecomment-6758662677)
+  reports a 107.4 s interval. A record does not claim that recovery was impossible.
+- 900 s without a present **and** without preparation-counter or frame-critical virtual-core progress
+  in loading/unknown state. [Intel reports](https://github.com/NotRexed/Hookshot/issues/999#issuecomment-6746064948)
+  include ten-minute recoveries. Whole preparations can take
+  [four to five hours](https://github.com/NotRexed/Hookshot/issues/996#issuecomment-6810225987); duration alone
+  is not a stall. Only changed numeric `vk: start-up`, noted/compute/predicted-pipeline and prepared-program
+  counts postpone the long tier, not repeated counts, audio, vibration or arbitrary text.
+
+Linux uses `SIGRTMIN+4` (the existing profiler uses +3), refusing collection if another handler owns it.
+Its handler keeps the interrupted PC and checked frame-pointer links in fixed slots; no unwinder, allocator,
+logger or loader lock runs there. Optimized code can have only a partial stack. Threads that block the signal,
+exit, or do not answer within 500 ms are marked unavailable. There are at most 512 threads and 48 frames each.
+Windows copies context and at most 256 KiB of stack while each other thread is suspended, resumes it, then
+walks the copy. No allocation, log or loader lookup occurs while suspended; stack bytes are never written.
+Detection/text records default on on both systems; Windows stack capture is opt-in until tested there.
+The proposed defaults need maintainer review; a source/Windows-target compile is not Windows execution.
+
+Virtual-core ownership is a nonblocking host-TID snapshot; no guest registers, heap, save or input contents
+are collected. Thread labels are a fixed host-name allow list (others become `thread-N`); module basenames
+and version labels pass the shared bounded privacy filter. The log stays separate and is not copied raw.
+
+
 ## 4. The lessons from MKW, as rules here
 
 Each of these cost days in mkw-recomp; the fork has the fixes, and these are the checks that keep them true for a

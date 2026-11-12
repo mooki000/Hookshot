@@ -117,6 +117,18 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value: the WebGPU renderer, when the exe was built with one |
 | `HOS_GPU_ALLOC_RETRY=0` | A model's material-block allocations from a full heap (the OptimizeChangeBank thread's two CPU buffers and two GPU-memory calls in f_804566e0) not tried in the heap's parents, as shipped (`host/oot_heap_retry.c`, issue 1697) |
 | `HOS_GPU_ALLOC_TEST_FAIL=<n>` or `<gpu>,<cpu>` | A test: the first n of those allocations of each kind (or that many of the GPU memory and of the CPU buffers) refused by the heap they name, as a full heap would, so the retry runs |
+| `HOS_STALL_WATCHDOG=0` | Disable local no-present records (on by default). After 30 s without a present in last-known gameplay, or 900 s in loading/unknown state without preparation-counter or frame-critical virtual-core progress: `bug-reports/pending/stall-<UTC>.txt`. One per stall, at most three per run; recovery appends `resumed: yes, after N s`. Nothing is sent |
+| `HOS_STALL_STACKS=0` or `1` | Stack collection with a stall record: on by default on Linux; opt-in on Windows pending Windows runtime testing. Only host module basenames and offsets, not memory bytes or saves. Unavailable/partial stacks are marked |
+| `HOS_STALL_TEST_BLOCK_FRAME=<n>` | Test only: block the game's presenting thread once for 40 s after native present n. Other threads keep running. Unset does nothing. Use a disposable run, never a player's session |
+
+
+The stall watcher samples once a second. Fresh movie/menu activity and an unfocused window are excluded;
+a menu sample older than two seconds becomes unknown, not a permanent exclusion. Before the first known
+gameplay state, loading and events use the long tier. Linux's menu hook is currently a no-op, so it cannot
+identify a pause menu there. A scheduling gap over five seconds restarts the timer (system sleep/overload).
+These are observations, not proof of a deadlock or a crash. A recovered stall is informational.
+Slow frames which keep presenting do not produce a record. A whole-process stop cannot be recorded until
+the process runs again. See [stall records](design.md#stall-records) for the limits and threshold evidence.
 
 ### Input for scripted runs
 

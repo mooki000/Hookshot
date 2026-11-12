@@ -2,6 +2,7 @@
    layer, and the display's vsync event, signaled at 60 Hz by a host thread. HDR and VRR are reported unsupported,
    so the game takes its SDR path. Frames are paced at the native NVN layer's window acquire (the end of this file). */
 #include "hos.h"
+#include "hos_stall.h"
 #include "../gpu/vk/vk_api.h"   /* (HOS_OPT_HDR_*, HOS_OPT_CAMERA_SPEED: the Insert menu's HDR and Camera speed, answered by the renderer) */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -498,6 +499,7 @@ void hos_vi_native_presented(const int64_t phases[4]) {
     }
     const int64_t period = 1000000000LL / fps_max() * present_interval, now = hos_now_ns();
     realtime_step(now);
+    hos_stall_present(now);
     /* (behind by more than a frame: the next one is paced from now, with no burst to catch up) */
     next_frame_at = next_frame_at && now - next_frame_at < period ? next_frame_at + period : now + period;
     {   /* (the display queue: this frame is shown one interval after the last, or now when the display waits) */

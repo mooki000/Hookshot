@@ -5,6 +5,7 @@
    there. TPIDRRO_EL0 (thread-local region): 0x200 bytes; the SDK's nn::os keeps the current ThreadType* at
    +0x1F8, so lifted SDK code that reads it inline finds the same thread the HLE knows. */
 #include "hos.h"
+#include "hos_stall.h"
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
@@ -300,6 +301,8 @@ static void log_flush(void) {}
 #endif
 
 void hos_log_flush(void) { log_flush(); }
+static int64_t last_log_ns;
+int64_t hos_stall_last_log_ns(void) { return __atomic_load_n(&last_log_ns, __ATOMIC_RELAXED); }
 
 void hos_log(const char *fmt, ...) {
     char buf[1024], line[1100];
@@ -307,6 +310,9 @@ void hos_log(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
+    const int64_t logged_ns = hos_now_ns();
+    __atomic_store_n(&last_log_ns, logged_ns, __ATOMIC_RELAXED);
+    hos_stall_log(buf, logged_ns);
     snprintf(line, sizeof line, "[hos %s] %s\n", cur ? cur->name : "host", buf);
     extern volatile int hos_control_on;   /* (control.c: log lines for its subscribers) */
     if (hos_control_on) {
@@ -1599,6 +1605,7 @@ static HosThread *vc_owner[8];
 static HosThread *vc_queue[1024];
 static int vc_nq;
 static struct { int64_t takes, waits, wait_ns, max_ns, escapes, kicks, yields, since; } vc_st;
+static uint64_t stall_serial_takes;
 
 int hos_vcores_on(void) {
     static int on = -1;
@@ -1634,6 +1641,7 @@ static void vc_take(HosThread *t, int c) {
     t->vc_held = c + 1;
     t->vc_last = c + 1;
     t->vc_kick = 0;
+    if (__atomic_load_n(&t->serial, __ATOMIC_RELAXED)) stall_serial_takes++;
 }
 static void vc_dequeue(HosThread *t) {
     for (int i = 0; i < vc_nq; i++)
@@ -1831,3 +1839,18 @@ int hos_cv_sleep(void *cv, void *lk, unsigned ms) {
     return SleepConditionVariableSRW((PCONDITION_VARIABLE)cv, (PSRWLOCK)lk, ms, 0);
 }
 #endif
+
+/* Only frame-critical virtual-core handovers count as loading progress. Audio/vibration
+   wake-ups continue during real freezes. No wait, log or guest-memory read under this lock. */
+uint64_t hos_stall_vcores(uint32_t owners[8]) {
+    memset(owners, 0, 8 * sizeof *owners);
+#if !defined(__EMSCRIPTEN__)
+    if (!TryAcquireSRWLockShared(&vc_lock)) return UINT64_MAX;
+    for (int i = 0; i < 8; i++) if (vc_owner[i] && vc_owner[i]->handle) owners[i] = GetThreadId(vc_owner[i]->handle);
+    const uint64_t progress = stall_serial_takes;
+    ReleaseSRWLockShared(&vc_lock);
+    return progress;
+#else
+    return 0;
+#endif
+}

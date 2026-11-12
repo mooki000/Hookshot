@@ -733,6 +733,8 @@ static int button_rect(uint64_t button, Rect *r) {
 typedef struct { uint64_t screen, vt; int64_t first_ns, seen_ns, lost_ns; int focus, running; unsigned n; } Seen;
 static Seen seen[24];
 static SRWLOCK seen_lock = SRWLOCK_INIT;   /* (the screens' updates run on several of the game's threads at once) */
+static int64_t stall_menu_seen;
+int64_t hos_stall_menu_seen_ns(void) { return __atomic_load_n(&stall_menu_seen, __ATOMIC_RELAXED); }
 
 static void focus_entry(int i, uint64_t entry, uint64_t button, void *arg) {
     (void)i, (void)entry;
@@ -809,12 +811,15 @@ void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
     static int64_t none_since;
     const int gone = !front && none_since && now - none_since > 50000000;
     none_since = front ? 0 : none_since ? none_since : now;
+    if (front) __atomic_store_n(&stall_menu_seen, now, __ATOMIC_RELAXED);
+    else if (gone) __atomic_store_n(&stall_menu_seen, 0, __ATOMIC_RELAXED);
     ReleaseSRWLockExclusive(&seen_lock);
     if (gone) hos_mouse_game_menu_gone();
     if (mine) mouse_tick(c, screen);
     if (screen == pause_screen_now()) InterlockedIncrement(&ticks);
 }
 #else
+int64_t hos_stall_menu_seen_ns(void) { return -1; } /* Linux has no menu observer here yet. */
 void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr) { (void)c, (void)screen, (void)pane, (void)lr; }
 void hos_oot_menu_tick(Ctx *c, uint64_t screen) { (void)c, (void)screen; }
 #endif

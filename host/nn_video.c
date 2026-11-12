@@ -591,11 +591,14 @@ static uint64_t submitted(void) {   /* a submission: every handle given out befo
     return id;
 }
 
+static int64_t stall_movie_seen;
+int64_t hos_stall_movie_seen_ns(void) { return __atomic_load_n(&stall_movie_seen, __ATOMIC_RELAXED); }
 static void dec_submit(Ctx *c) {
     Dec *d = (Dec *)host_of(ARG(1), DEC_MAGIC);
     const uint64_t id = submitted();
     if (ARG(0)) G64(ARG(0)) = id;
     if (!d || (!d->ctx && !d->mf)) { RET(0); return; }
+    __atomic_store_n(&stall_movie_seen, hos_now_ns(), __ATOMIC_RELAXED);
     AcquireSRWLockExclusive(&d->lock);
     /* (hookshot) the size is 64-bit: one past what an AVPacket holds was cut to a small packet and copied in whole; and
        the data must lie in guest memory */
