@@ -843,6 +843,10 @@ To enable the debug tools, turn **Debug tools** on in the menu's Debug tab (or a
 `hookshot_env.txt` in the game folder). The tools then show below it on the same tab. The tab's Developer section,
 always shown, has the Descriptor reuse, Sampler cache, Robust buffers and ASTC as RGBA8 rows.
 
+A save whose minimap stopped showing after a Teleport on an earlier build (the area left had hidden it, and the flag
+stayed set in the save) is mended by the Teleport itself: teleport to an outdoor area, wait until you can move, then
+save from the game's System menu. The minimap then stays after a restart.
+
 `RX_VK_UI_GAME_FONT=0` draws the menu with the included font (Libertinus) even when the game's files have the game's own
 menu font. `RX_VK_UI_PROMPTS=pad` (or `keys`) shows the controller's (or the keyboard's) prompts whatever was used last,
 for screenshots.
