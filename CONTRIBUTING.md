@@ -52,9 +52,10 @@ break. Claim in Discord #dev-work before you start.
 ## Development setup
 
 You need your own supported dump: program `0400486024DEC000`, update v131072, build `e0f3ccfa`. Other versions do
-not work, and the build reads the dump where it lies without changing it. Builds need about 60 GB free and a run uses
-about 10 GB of RAM. Build on an SSD if you can: a hard drive works, but takes much longer, and the builder warns you
-before it starts.
+not work, and the build reads the dump where it lies without changing it. Builds need about 60 GB free. For runtime
+memory, see the README's [requirements](readme.md#what-you-need): the game alone can exceed 16 GiB, depending on the
+build, driver and scene. Build on an SSD if you can: a hard drive works, but takes much longer, and the builder warns
+you before it starts.
 
 ### Windows, from the command line
 
