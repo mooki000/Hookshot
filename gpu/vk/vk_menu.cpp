@@ -2985,9 +2985,9 @@ const char* bug_report_cell() {
 /// Under its help once saved: where the report is and what to do with it (the game opens nothing: no browser or file manager is
 /// sure to be there, as on a Steam Deck in Game Mode)
 std::string bug_report_saved_text(const std::string& folder) {
-    return "A local report is available in the game folder as " + folder +
-           ". Review report.txt, then attach report.zip to a Game problem issue. The game opens nothing and sends nothing. "
-           "Never share a local-only save/ copy.";
+    return "Saved in the game folder as " + folder + ". To send it, open github.com/NotRexed/Hookshot/issues, choose New issue and "
+           "Game problem, copy report.txt's answers into the form and drag the folder's files into it: on Windows from File "
+           "Explorer, on Linux from a file manager (on a Steam Deck, in Desktop Mode).";
 }
 /// Under its help once pressed: how the report goes
 const char* bug_report_hint() {
