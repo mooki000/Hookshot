@@ -5,6 +5,7 @@ game folder's hookshot and waits for its socket), and the mem commands. Linux on
 
 python -I -B tests/test_hookshot_ctl.py
 """
+import importlib.util
 import json
 import os
 import subprocess
@@ -15,7 +16,14 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CTL = ROOT / "scripts" / "hookshot_ctl.py"
+CTL = Path(os.environ.get("HOOKSHOT_CTL_SOURCE", ROOT / "scripts" / "hookshot_ctl.py"))
+
+
+def client_module():
+    spec = importlib.util.spec_from_file_location("hookshot_ctl", CTL)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
 
 FAKE = r'''
 import json, os, socket, sys, threading, time
@@ -169,6 +177,22 @@ def ctl(*args, env=None, check=None):
 
 
 WINDOWS = os.name == "nt"
+
+
+class GamePaths(unittest.TestCase):
+    def test_builder_and_development_layouts(self):
+        m = client_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            name = "hookshot.exe" if WINDOWS else "hookshot"
+            (game / name).touch()
+            self.assertEqual(m.game_exe(tmp), str(game / name))
+            (game / "bin").mkdir()
+            (game / "bin" / name).touch()
+            self.assertEqual(m.game_exe(tmp), str(game / "bin" / name))
+            (game / "bin" / name).unlink()
+            self.assertEqual(m.game_exe(tmp), str(game / "bin" / name))
+            self.assertEqual(m.game_exe(tmp, str(game / "custom")), str(game / "custom"))
 
 
 class HookshotCtl(unittest.TestCase):
