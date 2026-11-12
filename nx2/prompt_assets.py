@@ -31,10 +31,16 @@ font's size (big-endian), each XORed with the same key as the font. The .zs file
 of Pack/ZsDic.pack.zs.
 """
 import argparse
+import hashlib
+import importlib
+import importlib.metadata
 import io
+import json
 import os
+import platform
 import struct
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
@@ -945,15 +951,193 @@ def dump(out, face, b, tex, layers):
             decode(b, tex[layer.texture]).save(game)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--romfs", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--faces", default=",".join(ALL_FACES))
-    ap.add_argument("--no-textures", action="store_true")
-    ap.add_argument("--dump", help="also write every face's images as PNG into <dir>/<face>/ (the names nx2/prompt_faces/<face>/ "
-                    "takes in their place), and the game's textures they go into into <dir>/game/")
-    a = ap.parse_args()
+PROMPT_KEY = ".prompt_key"
+# host/prompts.c writes these at run time, without changing the build's originals.
+PROMPT_RUNTIME = {"External.bfotf.zs", "Common.bntx.zs", "Common.key", "Common.blarc.zs", "Common.blarc.key", "rsizetable.mod.zs"}
+PROMPT_PACKAGES = {"fontTools": "fonttools", "PIL": "pillow", "astc_encoder": "astc-encoder-py",
+                   "texture2ddecoder": "texture2ddecoder", "numpy": "numpy", "zstandard": "zstandard", "archspec": "archspec"}
+PROMPT_ENV = ("SOURCE_DATE_EPOCH", "FREETYPE_PROPERTIES", "ARCHSPEC_CPU_DIR", "ARCHSPEC_EXTENSION_CPU_DIR",
+              "NPY_DISABLE_CPU_FEATURES")
+
+
+def prompt_file(path):
+    """Size and content, not just mtime: an input restored with its old time can still have changed."""
+    h = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            size += len(block)
+            h.update(block)
+    return [size, h.hexdigest()]
+
+
+def prompt_tree(folder, suffix=None, ignore=()):
+    """Files and directories, including empty face directories (the keyboard's is a runtime marker)."""
+    result = {}
+    try:
+        os.stat(folder)
+    except FileNotFoundError:   # an optional override directory may not exist
+        return result
+    def unreadable(error):
+        raise error
+    for d, dirs, files in os.walk(folder, onerror=unreadable):
+        for name in sorted(dirs + files):
+            p = os.path.join(d, name)
+            rel = os.path.relpath(p, folder).replace(os.sep, "/")
+            if rel in ignore:
+                continue
+            if os.path.islink(p) and os.path.isdir(p):
+                raise OSError(f"cannot fingerprint linked directory: {p}")
+            if os.path.isdir(p):
+                if suffix is None:
+                    result[rel] = None
+            elif suffix is None or name.endswith(suffix):
+                result[rel] = prompt_file(p)
+    return result
+
+
+def prompt_packages():
+    """The optional packages' usable presence and versions, including their native drawing/encoding libraries."""
+    result = {}
+    for module, package in PROMPT_PACKAGES.items():
+        try:
+            version = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            version = None
+        try:
+            importlib.import_module(module)
+            if version is None:
+                raise OSError(f"{module} has no package version")
+            result[module] = [version, True]
+        except ImportError as e:
+            result[module] = [version, False, e.name]
+    if result["PIL"][1]:
+        from PIL import features
+        result["Pillow libraries"] = {n: features.version(n) for n in features.get_supported()}
+    if result["astc_encoder"][1]:
+        result["ASTC backend"] = sorted(n for n in sys.modules if n.startswith("astc_encoder._encoder_"))
+    if result["zstandard"][1]:
+        import zstandard
+        result["zstd"] = list(zstandard.ZSTD_VERSION)
+    return result
+
+
+def prompt_key(a):
+    """Everything generate() reads; keep this list with its file opens/imports and tests/test_prompt_skip.py."""
+    source = {n: prompt_file(os.path.join(HERE, n)) for n in ("prompt_assets.py", "prompt_draw.py")}
+    tables = {n: prompt_file(os.path.join(HERE, n)) for n in ("prompt_faces.py", "prompt_keys.py")}
+    fonts = {FONT: prompt_file(os.path.join(a.romfs, FONT))}
+    try:
+        fonts[prompt_keys.LABEL_FONT] = prompt_file(os.path.join(a.romfs, prompt_keys.LABEL_FONT))
+    except FileNotFoundError:   # generate() uses Kenney's labels without the game's bold font
+        fonts[prompt_keys.LABEL_FONT] = None
+    for folder in (KENNEY, KENNEY_KEYBOARD):
+        fonts[os.path.basename(folder)] = prompt_tree(folder, ".otf")
+    game = {n: prompt_file(os.path.join(a.romfs, n)) for n in ("Pack/ZsDic.pack.zs", TEXTURES, LAYOUTS)}
+    folder = os.path.join(a.romfs, "System", "Resource")
+    tables.update({n: prompt_file(os.path.join(folder, n)) for n in sorted(os.listdir(folder))
+                   if n.startswith("ResourceSizeTable.") and n.endswith(".rsizetable.zs")})
+    switches = {n: os.environ.get(n) for n in PROMPT_ENV}
+    # A custom archspec database can select another ASTC binary without changing the package's version.
+    for n in ("ARCHSPEC_CPU_DIR", "ARCHSPEC_EXTENSION_CPU_DIR"):
+        if n in os.environ:
+            switches[n] = [os.environ[n], prompt_tree(os.environ[n], ".json")]
+    return {"source": source, "font": fonts, "table": tables, "game assets": game,
+            "overrides": prompt_tree(os.path.join(HERE, "prompt_faces"), ".png"), "packages": prompt_packages(),
+            "switch": switches, "parameters": [a.faces, a.no_textures, a.dump],
+            "Python/platform": [sys.version, sys.platform, platform.machine(), sys.byteorder]}
+
+
+def prompt_outputs(out):
+    return prompt_tree(out, ignore=PROMPT_RUNTIME | {PROMPT_KEY})
+
+
+def prompts_before(out, key):
+    """None means the complete outputs still match; otherwise the reason they need making again."""
+    try:
+        with open(os.path.join(out, PROMPT_KEY), encoding="utf-8") as f:
+            note = json.load(f)
+        if not isinstance(note, dict) or not isinstance(note.get("inputs"), dict) or not isinstance(note.get("outputs"), dict):
+            return "invalid stamp"
+        for kind, value in key.items():
+            if note["inputs"].get(kind) != value:
+                return kind + " changed"
+        if note["inputs"] != key:
+            return "inputs changed"
+        if "External.bfotf" not in note["outputs"] or note["outputs"] != prompt_outputs(out):
+            return "output missing or changed"
+    except (OSError, ValueError):
+        return "stamp or outputs unreadable"
+    return None
+
+
+def make_prompts(a, incremental=False):
+    """Generate in a fresh sibling directory; only complete outputs can replace the previous set."""
+    from kit import env_on
+    key = None
+    reason = "packaged or direct build"
+    if incremental:
+        try:
+            key = prompt_key(a)   # before the drawing, never certify old output with a key taken only afterwards
+            reason = prompts_before(a.out, key)
+        except (OSError, ValueError) as e:
+            reason = f"input unreadable: {e}"
+            print(f"prompts: {reason}; regenerating without a stamp", flush=True)
+    if env_on("HOOKSHOT_FORCE_PROMPTS"):
+        reason = "forced"
+    if reason is None:
+        # Every build used to clear these along with the originals. Their runtime keys do not cover host/prompts.c.
+        try:
+            for name in sorted(PROMPT_RUNTIME):
+                try:
+                    os.remove(os.path.join(a.out, name))
+                except FileNotFoundError:
+                    pass
+        except OSError as e:
+            reason = f"runtime files could not be cleared: {e}"
+            print(f"prompts: {reason}; regenerating", flush=True)
+        else:
+            print("prompts: unchanged, kept", flush=True)
+            return
+    stamp = os.path.join(a.out, PROMPT_KEY)
+    try:
+        os.remove(stamp)   # an interrupted retry must not leave even the previous stamp behind
+    except FileNotFoundError:
+        pass
+    out = a.out
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".prompts-", dir=os.path.dirname(os.path.abspath(out))) as temp:
+        a.out = os.path.join(temp, "new")
+        try:
+            generate(a)
+            outputs = prompt_outputs(a.out)
+            if "External.bfotf" not in outputs or any(face not in outputs for face in a.faces.split(",")):
+                raise OSError("prompts: incomplete generated output")
+            if key is not None:
+                try:
+                    stable = key == prompt_key(a)
+                except (OSError, ValueError):
+                    stable = False
+                if stable:
+                    with open(os.path.join(a.out, PROMPT_KEY), "w", encoding="utf-8") as f:
+                        json.dump({"inputs": key, "outputs": outputs}, f, sort_keys=True)
+                else:
+                    reason += "; inputs changed or unreadable during generation, not stamped"
+            previous = os.path.join(temp, "previous")
+            if os.path.exists(out):
+                os.replace(out, previous)
+            try:
+                os.replace(a.out, out)
+            except BaseException:
+                if os.path.exists(previous):
+                    os.replace(previous, out)
+                raise
+        finally:
+            a.out = out
+    print(f"prompts: regenerated ({reason})", flush=True)
+
+
+def generate(a):
     dictionary = zs_dictionary(a.romfs)
     game_font = read_zs(a.romfs, FONT, dictionary)
     key, otf = unwrap(game_font)
@@ -1015,6 +1199,19 @@ def main():
         print(f"prompts: the size table lets the font have {len(font)} bytes", file=sys.stderr)
     elif os.path.exists(path):
         os.remove(path)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--romfs", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--faces", default=",".join(ALL_FACES))
+    ap.add_argument("--no-textures", action="store_true")
+    ap.add_argument("--dump", help="also write every face's images as PNG into <dir>/<face>/ (the names nx2/prompt_faces/<face>/ "
+                    "takes in their place), and the game's textures they go into into <dir>/game/")
+    ap.add_argument("--incremental", action="store_true", help="keep complete, unchanged output (source-checkout builds)")
+    a = ap.parse_args()
+    make_prompts(a, a.incremental and not a.dump)   # a layer dump is requested output too: always draw it
 
 
 if __name__ == "__main__":

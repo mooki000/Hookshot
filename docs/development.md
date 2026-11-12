@@ -194,6 +194,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `HOOKSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once (default one per CPU thread, each started when the free memory holds it; `HOOKSHOT_MEM_GATE=0` turns that check off) |
 | `HOOKSHOT_LIFT_JOBS=<n>` | Processes that write the lifted C and make its edits (default the cores, at most 16, one per 2 GB free) |
 | `HOOKSHOT_KEEP_BUILD_FILES=1` | Keeps the lifted C and the objects after a build, so that the next one compiles only what changed |
+| `HOOKSHOT_FORCE_PROMPTS=1` | Regenerates button-prompt assets even when unchanged. Unset, empty, `0`, `false`, `off` and `no` (case-insensitive, surrounding spaces ignored) are off |
 | `HOOKSHOT_MINGW=<dir>`, `HOOKSHOT_MSVC=1` | The llvm-mingw to build with; the Visual Studio route instead |
 | `RX_CPM=<dir>`, `WGPU_NATIVE=<dir>` | The CPM cache (Vulkan and SPIR-V headers, VMA, FFmpeg) and wgpu-native |
 | `RX_TARGET=windows` | On Linux: the Windows game, with llvm-mingw's Linux build in `HOOKSHOT_MINGW` |
@@ -203,6 +204,16 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `x86-64-v2`, else `x86-64`) |
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
+
+Source-checkout builds keep the button prompts when their source, fonts, game assets, button tables, image overrides,
+Python, package/library versions and generation options still match, and every generated file still has its recorded
+size and content hash. The inputs are checked before and after generation; changed or unreadable inputs leave no reusable
+stamp. The log says `prompts: unchanged, kept` or why it regenerated. Packaged builders (the finish stage's launcher
+path) still regenerate every time; `RX_RELEASE` does not distinguish them from source builds. Generation uses a fresh
+directory and publishes only a complete set. A failed generator still removes the prompts, so the game shows its own
+icons, as before. An interrupted builder can leave the old set without a stamp; the next build regenerates it.
+The files the game derives at run time are still cleared by every build, including a cache hit; they are not part of
+the stamp. If those files cannot be cleared, the build regenerates rather than trusting them.
 
 #### A faster build for development
 
