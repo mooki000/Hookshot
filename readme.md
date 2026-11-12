@@ -916,11 +916,19 @@ are missing while it is set. Off unless set.
 The switches for scripted test runs, screenshots, frame dumps and profiles are in the
 [development guide](docs/development.md#switches-for-testing-and-debugging).
 
-`RX_VK_WB_MAX_KB=<KB>` stops the write-back of written GPU bindings larger than that. OoT writes tens of MB of culling
-lists and per-frame buffers through the GPU that the CPU never reads, and copying them back sat on every submit's
-memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submit, holding the scene at 45-48 fps.
-`RX_VK_WB_MAX_KB=1024` still copies the small results the CPU does read (the exposure meter and the like) and took the
-same scene to 59-60 fps. `0` or unset copies every written binding, as before.
+`RX_VK_WB_MAX_KB=<KB>` (off by default; 1024 is the tested value) is the size from which a written GPU binding may go
+without most of its write-back. OoT
+writes tens of MB of culling lists and per-frame buffers through the GPU that the CPU never reads, and copying them back
+sat on every submit's memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submit, holding the
+scene at 45-48 fps. The CPU does read and write parts of some large ones, so a binding over the size is written back
+whole for the first `RX_VK_WB_PROBATION` submissions that write it (default 8), and after that only the ranges the CPU
+read or wrote meanwhile, and its first and last page when it shares them, are written back (`gpu/vk/wb_learn.h`). The
+trade-off: a range the CPU first touches only after that (read more rarely than every 8 frames) gets the stale copy
+once, and is written back from then on; the log names each one (`in a binding whose write-back was left out`).
+Unset or `0`, every written binding is copied back whole. It is off by default because, measured so far (an RTX 3060 Ti
+on Windows, an RX 580 on Linux with its mirror forced on), it copies back ~50 MB a frame less at the same frame rate:
+results from laptops and other slow PCIe links are wanted. `RX_VK_LOG_WB_SKIPS=1` lists the bindings left out every
+600 submits.
 
 </details>
 

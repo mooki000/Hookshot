@@ -790,7 +790,10 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
         set->busy = true;
         fg.next_set = (fg.next_set + 1) % 3;
     }
-    const int cur = fg.cur, prev = cur ^ 1, m = multiplier();
+    // (the multiplier the sets were made for, ensure_size above: the row read again here could be one step up by now, the
+    // menu runs on the display thread, and the set's last image would be one that was never made)
+    const int cur = fg.cur, prev = cur ^ 1, m = fg.mult;
+    const bool auto_rate = opts.framegen == 1;   // (read once, for the same reason)
     const bool blend = fg.have_prev && !gap;
     set->reflex_id = reflex_frame();   // (NVIDIA Reflex: the game frame this set shows, vk_reflex.cpp)
     set->antilag_id = antilag_frame();   // (AMD Anti-Lag 2: the same, vk_antilag.cpp)
@@ -804,7 +807,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     pass(cmd, fg.luma, {{fg.frames[cur].view, fg.nearest}, {fg.lumas[cur].view, VK_NULL_HANDLE}}, qw, qh);
     set->made = 0;
     set->shown = -1;
-    if (opts.framegen == 1) {   // (Auto: a frame for each of the display's refreshes, at its own time)
+    if (auto_rate) {   // (Auto: a frame for each of the display's refreshes, at its own time)
         const int mhz = display_refresh_mhz();
         const int64_t period = (int64_t)(1e12 / (mhz > 0 ? mhz : 60000));
         float t[kMaxMult];

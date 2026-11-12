@@ -334,6 +334,7 @@ public:
     Id decrement_cas_shared{};
     Id decrement_cas_ssbo{};
     Id f32_add_cas{};
+    bool native_f32_add{};   // (hookshot) the float adds are OpAtomicFAddEXT, not f32_add_cas (DefineStorageBuffers)
     Id f16x2_add_cas{};
     Id f16x2_min_cas{};
     Id f16x2_max_cas{};

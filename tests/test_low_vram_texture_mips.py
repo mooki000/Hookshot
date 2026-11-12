@@ -33,6 +33,8 @@ def main():
     source = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8-sig")
     mip = block(source, "{   // huge textures leave out their top levels:")
     policy = block(source, "bool low_vram_texture_mips(") if "bool low_vram_texture_mips(" in source else ""
+    helpers = "\n".join(block(source, marker) for marker in (
+        "bool is_bc(VkFormat f)", "bool is_astc(VkFormat f)", "uint64_t texture_level_units("))
     fixture = r'''
 #include <algorithm>
 #include <cstdint>
@@ -57,7 +59,7 @@ bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* = nullptr) {
     *used = 2000ull << 20; *budget = allowed; return query_ok;
 }
 void logf(const char*, ...) {}
-bool is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
+@HELPERS@
 extern "C" VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceSparseImageFormatProperties(
         VkPhysicalDevice, VkFormat, VkImageType, VkSampleCountFlagBits, VkImageUsageFlags, VkImageTiling,
         uint32_t* n, VkSparseImageFormatProperties*) { *n = 0; }
@@ -97,7 +99,7 @@ int main(int argc, char** argv) {
     }
     std::printf("PASS %s\n",argv[11]);
 }
-'''.replace("@POLICY@", policy).replace("@MIP@", mip)
+'''.replace("@HELPERS@", helpers).replace("@POLICY@", policy).replace("@MIP@", mip)
     # Literal outcomes: (skip, width, levels) for a 3072-square image and a
     # 1365-square, 90-layer image. No expected result calls the production policy.
     original = (0, 3072, 12, 0, 1365, 11)

@@ -41,6 +41,10 @@ static void require(bool condition, const char* message) {
 struct ParLock { ParLock() {} ~ParLock() {} };
 static void texture_gpu_wrote(uint64_t, uint64_t) { ++texture_writes; }
 static void rb_hazard_locked(uint64_t lo, uint64_t hi) { ++hazards; hazard_lo = lo; hazard_hi = hi; }
+// (gpu/vk/wb_learn.h's table: every write-back queued here; tests/test_wb_learn.py runs its rules)
+static bool wb_leave_out(uint64_t, uint64_t, std::vector<std::pair<uint64_t, uint64_t>>&) { return false; }
+static bool wb_skips_log() { return false; }
+static void wb_skip_note(uint64_t, uint64_t) {}
 static bool mirror_on() { return mirrors; }
 static void note_in_place_read(bool = false) {}   // (the readback's part wait: tests/test_readback_part.py checks every such read is noted)
 static Pool* pool_of(uint64_t guest, uint64_t size) {

@@ -118,6 +118,7 @@ typedef struct {
     Picture queue[MAX_QUEUE];
     int qhead, qn;
     int eos;                         /* the last submission is in and decoded: an empty queue is the end */
+    int stopped;                     /* (hookshot) Stop or Flush since the last submission: no picture is coming (dec_acquire) */
     Pending *phead, *ptail;          /* submissions not decoded yet, oldest first */
     int64_t submits, acquires;
     int clock_set;                   /* (hookshot) the movie's clock: the picture at clock_pts was due at clock_ns */
@@ -612,6 +613,7 @@ static void dec_submit(Ctx *c) {
         }
     }
     d->submits++;
+    d->stopped = 0;   /* (hookshot: pictures are coming again: dec_acquire waits for one as before) */
     if (ARG(5) & 1) pending_push(d, NULL);
     const int logged_one = d->log_submits > 0;
     if (logged_one) d->log_submits--;
@@ -638,6 +640,7 @@ static void dec_flush(Ctx *c, const char *what) {
         d->qhead = d->qn = 0;
         d->eos = 0;
         d->clock_set = 0;
+        d->stopped = 1;   /* (hookshot: until the next submission, dec_acquire has nothing to wait for) */
         for (int i = 0; i < MAX_SLOTS; i++) d->slot_last[i] = 0;
         ReleaseSRWLockExclusive(&d->lock);
     }
@@ -668,7 +671,14 @@ static void dec_acquire(Ctx *c) {
     const int away = hos_vcore_away();
     AcquireSRWLockExclusive(&d->lock);
     decode_pending(d);
-    for (int tries = 0; !d->qn && !d->eos && tries < 50; tries++) {
+    /* (hookshot) The wait is for a picture another thread's submission is about to bring, ~100 ms of it. It was 50 tries of a
+       2 ms sleep, and such a sleep takes 4-5 ms: 245-257 ms, on the thread a movie's end joins (title to game: the game's main
+       thread in hos_thread_join for a frame of ~250 ms, every start). Now by the clock, and none after a Stop or a Flush with
+       nothing submitted since: no picture is coming then. HOS_VIDEO_ACQUIRE_TRIES=1: 50 tries, as before */
+    static int by_tries = -1;
+    if (by_tries < 0) by_tries = env_on("HOS_VIDEO_ACQUIRE_TRIES");
+    const int64_t wait_until = hos_now_ns() + 100000000;
+    for (int tries = 0; !d->qn && !d->eos && (by_tries ? tries < 50 : !d->stopped && hos_now_ns() < wait_until); tries++) {
         ReleaseSRWLockExclusive(&d->lock);
         hos_sleep_ns(2000000);
         AcquireSRWLockExclusive(&d->lock);

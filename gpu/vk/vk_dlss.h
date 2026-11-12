@@ -20,6 +20,10 @@ DlssWhy dlss_why();
 /// Asks NGX once whether DLSS runs on this device, so dlss_why knows before the first upscale (the menu, when it opens).
 /// Nothing off an NVIDIA device with NGX's extensions, or in a build without DLSS
 void dlss_probe();
+/// A feature that was not made is asked for again at the next upscale (vk_dlss.cpp prepare's `refused`): the player
+/// changed a row the feature is made from (vk_temporal.cpp temporal_reset_failure, with the chain's lock held, as prepare
+/// has it)
+void dlss_retry();
 /// The instance's extensions DLSS needs, added to `want` when the loader has them (all: what it has)
 void dlss_instance_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all);
 /// The device's extensions DLSS needs, added to `want` when the device has them

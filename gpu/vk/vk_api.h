@@ -47,6 +47,10 @@ enum { HOS_OPT_HDR_TONEMAP = 47 };
 /* Gameplay's vertical field of view, percent of the game's current angle; 100 is unchanged. */
 /* 49 and 50 are reserved for Walk mode and Walk speed (#2345). */
 enum { HOS_OPT_FOV = 51 };
+/* (HOS_OPT_SKIP_OPENING, 52: Gameplay's Skip opening, host/hos_main.c hos_oot_opening. Off. The new-game story movie
+   and Navi waking Link. 44 stays reserved for Skip title, 49 and 50 for Walk, 60 for the item wheel. A new option id
+   answered by the existing option callback does not change MkwVkHost or MkwVkRenderer.) */
+enum { HOS_OPT_SKIP_OPENING = 52 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:

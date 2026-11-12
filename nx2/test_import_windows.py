@@ -56,6 +56,7 @@ thread_local bool import_cooling = false;
 thread_local int import_result = 0;
 bool import_on_hold(uint64_t, uint64_t) { import_cooling = false; return false; }
 void import_remember_failure(uint64_t, uint64_t) {}
+bool mirror_on() { return true; } // (import_chunk's default: 4 MB with VRAM mirrors, 16 without)
 '''+guard+'''
     p.lo=lo;p.hi=hi;imports++;return true;
 }

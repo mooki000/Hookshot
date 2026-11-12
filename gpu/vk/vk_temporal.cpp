@@ -759,6 +759,7 @@ void temporal_reset_failure() {
     s.reason = nullptr;
     s.reason_repeats = 0;
     s.last_frame = 0;
+    dlss_retry();   // (and a DLSS feature that was not made, which is held off there, not by `failed`)
 }
 
 void temporal_idle() {
