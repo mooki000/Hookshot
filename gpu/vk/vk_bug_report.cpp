@@ -93,6 +93,18 @@ bool read_text(const std::string& path, std::string& text, size_t cap = kTextCap
     if (!ok) text.clear();
     return ok;
 }
+/// Structured UTF-8 records may be written by Windows text tools. Normalize CRLF
+/// once at intake, before header/key/resumed checks; never change logs or PNG bytes.
+bool read_record(const std::string& path, std::string& text, size_t cap = kTextCap) {
+    if (!read_text(path, text, cap)) return false;
+    size_t out = 0;
+    for (size_t at = 0; at < text.size(); ++at) {
+        if (text[at] == '\r' && at + 1 < text.size() && text[at + 1] == '\n') continue;
+        text[out++] = text[at];
+    }
+    text.resize(out);
+    return true;
+}
 bool put_file(const std::string& path, const std::string& text) {
     FILE* f = open_file(path, "wb");
     if (!f) return false;
@@ -516,10 +528,11 @@ uint64_t file_size(FILE* f) {
 /// Whether two paths name one file (the log this run writes, and hookshot_log.txt in the game folder)
 bool same_file(const std::string& a, const std::string& b, bool windows) {
     if (a.empty() || b.empty()) return false;
-#ifndef _WIN32
-    struct stat sa, sb;
-    if (!windows && !stat(a.c_str(), &sa) && !stat(b.c_str(), &sb)) return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
-#endif
+    // File identity handles Windows short/long aliases and hard links as well as
+    // POSIX aliases. Text comparison is only a fallback when identity is unavailable.
+    std::error_code ec;
+    const bool equivalent = fs::equivalent(path_of(a), path_of(b), ec);
+    if (!ec) return equivalent;
     return a.size() == b.size() && matches_at(a, 0, b, windows);
 }
 
@@ -935,6 +948,7 @@ std::string write(const Inputs& in) {
     std::vector<pipeline_share::Entry> entries;
     std::vector<fs::path> consumed;
     const auto pending = pending_records(in); // a disappeared record is a named failure, not silently forgotten
+    const std::string current_run_id = pending.empty() ? "" : log_run_id(in.current_log);
     bool failed = false;
     const auto omit = [&](const std::string& name, const std::string& reason, bool error = false) {
         items.push_back({name, error ? "failed" : "omitted", clean(reason, in), "", 0, false});
@@ -1016,9 +1030,10 @@ std::string write(const Inputs& in) {
     }
     for (const auto& record : pending) {
         std::string text;
-        if (!read_text(path_text(record), text) || !record_header(text) || (in.previous_run && record_resumed(text))) continue;
-        if (ended_version.empty()) ended_version = record_value(text, "version");
+        if (!read_record(path_text(record), text) || !record_header(text) || (in.previous_run && record_resumed(text))) continue;
         const std::string id = record_value(text, "run_id"), incident = path_text(record.stem());
+        if (in.previous_run && text.starts_with("Hookshot stall record 1\n") && valid_run_id(id) && id == current_run_id) continue;
+        if (ended_version.empty()) ended_version = record_value(text, "version");
         const auto found = log_ids.find(id);
         if (!valid_run_id(id) || found == log_ids.end()) {
             omit(incident + "-log.txt", valid_run_id(id) ? "the log of that run has aged out (no matching run id among current and .1 to .4)" :
@@ -1165,12 +1180,19 @@ std::string write(const Inputs& in) {
     for (const fs::path& record : pending) {
         const std::string name = path_text(record.filename()), incident = path_text(record.stem());
         std::string text;
-        if (!read_text(path_text(record), text)) { omit(name, "record missing, unreadable or above 1 MiB", true); continue; }
+        if (!read_record(path_text(record), text)) { omit(name, "record missing, unreadable or above 1 MiB", true); continue; }
         if (!record_header(text)) { omit(name, "unknown record header"); continue; }
         if (in.previous_run && record_resumed(text)) continue;
-        if (keep(name, record_text(text, in), name.starts_with("unclean-") ?
-                 "last run did not end cleanly; not evidence of a crash" : "pending diagnostic record (known bounded fields only)", false, incident))
-            consumed.push_back(record);
+        const std::string record_id = record_value(text, "run_id");
+        if (in.previous_run && text.starts_with("Hookshot stall record 1\n") && valid_run_id(record_id) && record_id == current_run_id) continue;
+        // The watchdog may still hold this file open and append "resumed". A
+        // copy must not unlink that live inode (POSIX) or depend on share-delete.
+        const bool retain_live = text.starts_with("Hookshot stall record 1\n") && !record_resumed(text) &&
+            (!valid_run_id(current_run_id) || !valid_run_id(record_id) || record_id == current_run_id);
+        const char* purpose = retain_live ? "unresolved current/unknown-run stall snapshot; pending source retained for resume updates" :
+            name.starts_with("unclean-") ? "last run did not end cleanly; not evidence of a crash" :
+            "pending diagnostic record (known bounded fields only)";
+        if (keep(name, record_text(text, in), purpose, false, incident) && !retain_live) consumed.push_back(record);
         auto companion = record;
         companion.replace_extension(".dmp");
         if (exists(path_text(companion))) omit(path_text(companion.filename()), "binary dump stays local in pending; cannot be text-redacted");
@@ -1178,7 +1200,7 @@ std::string write(const Inputs& in) {
         companion.replace_extension(".stacks.txt");
         if (exists(path_text(companion))) {
             std::string stacks;
-            if (!read_text(path_text(companion), stacks, 4u << 20) || !stacks.starts_with("Hookshot stall stacks 1\n")) {
+            if (!read_record(path_text(companion), stacks, 4u << 20) || !stacks.starts_with("Hookshot stall stacks 1\n")) {
                 omit(path_text(companion.filename()), "stack file unreadable or unknown format", true);
             } else {
                 std::istringstream lines(stacks);
@@ -1196,8 +1218,8 @@ std::string write(const Inputs& in) {
                     else if (!line.empty()) ++left;
                 }
                 safe += "Reader: " + std::to_string(left) + " lines left out; thread labels omitted.\n";
-                if (keep(path_text(companion.filename()), safe, "bounded thread IDs and module offsets, no raw stack memory", false, incident))
-                    consumed.push_back(companion);
+                if (keep(path_text(companion.filename()), safe, "bounded thread IDs and module offsets, no raw stack memory", false, incident) &&
+                    !retain_live) consumed.push_back(companion);
             }
         }
     }
@@ -1329,10 +1351,15 @@ std::string write(const Inputs& in) {
 }
 
 bool recover(Inputs in) {
+    std::string current_run_id;
+    bool have_identity = false;
     for (const auto& record : pending_records(in)) {
         std::string text;
-        if (!read_text(path_text(record), text) || !record_header(text) || record_resumed(text)) continue;
+        if (!read_record(path_text(record), text) || !record_header(text) || record_resumed(text)) continue;
         if (!in.now) fill_here(in);
+        if (!have_identity) current_run_id = log_run_id(in.current_log), have_identity = true;
+        const std::string record_id = record_value(text, "run_id");
+        if (text.starts_with("Hookshot stall record 1\n") && valid_run_id(record_id) && record_id == current_run_id) continue;
         in.previous_run = true;
         in.ask_picture = nullptr;
         return start(std::move(in));

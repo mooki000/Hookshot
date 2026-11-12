@@ -175,6 +175,12 @@ IDs and module-basename offsets, not stack memory. `bug-reports/running/` is nev
 version banner. Incident lookup reads at most the first 64 KiB/64 lines of current and `.1`–`.4`
 logs and matches that identity. Missing IDs never justify guessing an incident's log. Ordinary
 manual reports retain the older current/previous-log behavior when no ID exists.
+Structured records/stacks accept LF or Windows CRLF; only their intake normalizes line endings,
+never the raw log copies or PNGs. File identity is checked before path spelling, so Windows
+short/long aliases do not make the current log look like the previous run.
+An unresolved stall from the current run (or with unknown run identity) is copied without
+unlinking its source or stack companion: the watchdog may still append its resumed line.
+Known current-run stalls do not trigger a previous-run startup report.
 This metadata is for a future launcher reader; the current game does not send or open anything.
 
 

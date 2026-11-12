@@ -29,7 +29,9 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 DRIVER = r'''#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
-#include "vk_bug_report.h"
+// Include the real writer so declined-recovery diagnostics can name its exact
+// intake decision and the Windows-alias fixture can exercise same_file directly.
+#include "vk_bug_report.cpp"
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -64,6 +66,47 @@ static bool ask_failure(const char* path, uint64_t) {
     if (failed_item == "drop-record") std::filesystem::remove(std::filesystem::path((const char8_t*)incident.c_str()));
     else std::filesystem::create_directory(folder / failed_item);
     return false;
+}
+
+// Fixture-only diagnostics: paths/header bytes below are authored test inputs.
+// Production reports never gain these unredacted debugging lines.
+static std::string escaped(std::string value) {
+    std::string out;
+    for (unsigned char ch : value.substr(0, 160)) {
+        if (ch == '\r') out += "\\r";
+        else if (ch == '\n') out += "\\n";
+        else if (ch >= 32 && ch < 127) out += (char)ch;
+        else { char byte[8]; std::snprintf(byte, sizeof byte, "\\x%02x", ch); out += byte; }
+    }
+    return out;
+}
+static void recovery_declined(const Inputs& in) {
+    const auto root = path_of(in.game_dir) / "bug-reports/pending";
+    std::error_code ec;
+    const bool directory = std::filesystem::is_directory(root, ec);
+    const auto candidates = pending_records(in);
+    const std::string current_id = log_run_id(in.current_log);
+    std::printf("DECLINED windows=%d game_dir=<%s> pending=<%s> directory=%d error=%d:%s candidates=%zu\n",
+        in.windows, in.game_dir.c_str(), path_text(root).c_str(), directory, ec.value(), ec.message().c_str(), candidates.size());
+    unsigned count = 0;
+    for (std::filesystem::directory_iterator it(root, ec), end; !ec && it != end && count++ < 32; it.increment(ec)) {
+        std::string raw, normalized;
+        const bool readable = read_text(path_text(it->path()), raw);
+        const bool parsed = read_record(path_text(it->path()), normalized);
+        const bool selected = std::find(candidates.begin(), candidates.end(), it->path()) != candidates.end();
+        const std::string id = record_value(normalized, "run_id");
+        std::printf("RECORD name=<%s> selected=%d raw_read=%d raw_header=%d normalized_read=%d header=%d resumed=%d same_run=%d run_id=<%s> first_bytes=<%s>\n",
+            path_text(it->path().filename()).c_str(), selected, readable, record_header(raw), parsed,
+            record_header(normalized), record_resumed(normalized), valid_run_id(id) && id == current_id,
+            escaped(id).c_str(), escaped(raw).c_str());
+    }
+    if (ec) std::printf("DIRECTORY error=%d:%s\n", ec.value(), ec.message().c_str());
+    for (int rotation = 0; rotation <= 4; ++rotation) {
+        const std::string name = rotation ? "hookshot_log." + std::to_string(rotation) + ".txt" : "hookshot_log.txt";
+        std::printf("LOG-ID name=<%s> id=<%s>\n", name.c_str(), escaped(log_run_id(in.game_dir + name)).c_str());
+    }
+    std::printf("CURRENT path=<%s> id=<%s> equals_game_log=%d state=%d shown=<%s>\n", in.current_log.c_str(), current_id.c_str(),
+        same_file(in.current_log, in.game_dir + "hookshot_log.txt", in.windows), (int)state(), shown().c_str());
 }
 
 int main(int argc, char** argv) {
@@ -115,12 +158,14 @@ int main(int argc, char** argv) {
     if (mode == "late") in.ask_picture = ask_late;
     if (mode == "recover" || mode == "recover-empty") {
         const bool got = recover(in);
+        if (!got) recovery_declined(in);
         CHECK(got == (mode == "recover"));
         for (int i = 0; i < 3000 && state() == kSaving; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         if (got) CHECK(state() == kSaved);
         std::printf("FOLDER %s\n", got ? shown().c_str() : "");
         return fails ? 1 : 0;
     }
+    if (mode == "alias") CHECK(same_file(in.current_log, in.game_dir + "hookshot_log.txt", true));
     if (mode == "start") {   // (the menu's way: on a thread of its own, its state read each frame)
         in.ask_picture = ask_held;
         CHECK(start(in));
@@ -338,8 +383,7 @@ def main():
         cpp.write_text(DRIVER, encoding="utf-8")
         # (_CRT_SECURE_NO_WARNINGS: the MSVC CRT's getenv deprecation, as the game's own Windows build passes)
         subprocess.run([a.cxx, "-std=c++20", "-O1", *([] if windows else ["-pthread"]), "-Wall", "-Wextra", "-Werror",
-                        "-D_CRT_SECURE_NO_WARNINGS", "-I", str(ROOT / "gpu" / "vk"), str(cpp),
-                        str(ROOT / "gpu" / "vk" / "vk_bug_report.cpp"), "-o", str(exe)], check=True)
+                        "-D_CRT_SECURE_NO_WARNINGS", "-I", str(ROOT / "gpu" / "vk"), str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(history_exe)], check=True)
         user = "alice"
         home = str(tmp / "home" / user)
@@ -423,6 +467,18 @@ def main():
               "the link carries a switch's value: " + link)
         check(len(link) <= 2000 and "in short" not in report, "the link: %d characters" % len(link))
         check(any("menu: bug report written to " + folders[0] in ln for ln in out), "nothing logged: %s" % out)
+
+        # File identity, not text spelling: simulate short/long Windows paths with
+        # two native hard-link names. The C++ case explicitly asks for Windows rules.
+        alias_dir = tmp / "RUNNER~1"
+        alias_dir.mkdir()
+        alias = alias_dir / "hookshot_log.txt"
+        os.link(now_log, alias)
+        folders, _ = run(exe, "alias", game, str(alias), home, user, windows)
+        alias_files = files_of(game_path / folders[0])
+        check("Market_Child" in alias_files["hookshot_log.1.txt"] and "HyruleField_Child" not in alias_files["hookshot_log.1.txt"],
+              "short/long alias made the current log look like the previous one")
+        bundle(game_path / folders[0], home, user, game)
 
         # 2. the menu's way: on a thread, its state read each frame; no frame comes, so no picture
         folders, out = run(exe, "start", game, str(now_log), home, user, windows)
@@ -521,7 +577,7 @@ def main():
         old_text = previous_log.read_text(encoding="utf-8")
         old_text = old_text.replace("\n", "\n[hos host] run_id: " + old_id + "\n", 1)
         old_text += "[hos host] CRASH: [x0] 00 01 02 03\n"
-        previous_log.write_text(old_text, encoding="utf-8")
+        previous_log.write_bytes(old_text.replace("\n", "\r\n").encode("utf-8"))
         incident_name = "crash-20261112T120000Z.txt"
         record = pending / incident_name
         authored = ("Hookshot crash record 1\nrun_id: " + old_id + "\nversion: v2.0.14\nwhen: 20261112T120000Z\n"
@@ -548,13 +604,13 @@ def main():
         folders, _ = run(exe, "fail-drop-record", game, str(now_log), home, user, windows)
         check("record missing" in (game_path / folders[0] / "report.txt").read_text(encoding="utf-8"), "missing record not named")
 
-        record.write_text(authored, encoding="utf-8")
+        record.write_bytes(authored.replace("\n", "\r\n").encode("utf-8"))
         dump = record.with_suffix(".dmp")
         dump.write_bytes(b"LOCAL-ONLY-DUMP")
         stack = record.with_suffix(".stacks.txt")
-        stack.write_text('Hookshot stall stacks 1\nthreads: 1 (limit 512; best effort, not simultaneous)\n'
-                         'thread 123 "alice private-machine" (partial stack)\n  0 libc.so.6+0x1234\n'
-                         'private: never-share-this\n', encoding="utf-8")
+        stack.write_bytes(('Hookshot stall stacks 1\nthreads: 1 (limit 512; best effort, not simultaneous)\n'
+                           'thread 123 "alice private-machine" (partial stack)\n  0 libc.so.6+0x1234\n'
+                           'private: never-share-this\n').replace("\n", "\r\n").encode("utf-8"))
         folders, _ = run(exe, "recover", game, str(now_log), home, user, windows)
         result = game_path / folders[0]
         meta = bundle(result, home, user, game)
@@ -595,7 +651,7 @@ def main():
         check("no run id: the log of that record could not be matched" in (result / "report.txt").read_text(encoding="utf-8"),
               "legacy record guessed a log")
         resumed = pending / "stall-20261112T120001Z-7-1.txt"
-        resumed.write_text("Hookshot stall record 1\nreason: no present\nresumed: yes, after 11 s\n", encoding="utf-8")
+        resumed.write_bytes(b"Hookshot stall record 1\r\nreason: no present\r\nresumed: yes, after 11 s\r\n")
         before_folders = set((game_path / "bug-reports").iterdir())
         folders, _ = run(exe, "recover-empty", game, str(now_log), home, user, windows)
         check(folders == [""] and set((game_path / "bug-reports").iterdir()) == before_folders and resumed.exists(),
@@ -614,6 +670,52 @@ def main():
         check("last run did not end cleanly; not evidence of a crash" in (result / "report.txt").read_text(encoding="utf-8"),
               "unclean end misclassified")
         check(termination_note in (result / unclean.name).read_text(encoding="utf-8"), "unclean termination note lost")
+
+        # A deliberately rejected header must leave an actionable fixture diagnostic.
+        bad_record = pending / "stall-20261112T120003Z.txt"
+        bad_record.write_bytes(b"Hookshot stall record 99\r\nreason: authored invalid version\r\n")
+        folders, out = run(exe, "recover-empty", game, str(now_log), home, user, windows)
+        check(folders == [""] and any("header=0" in line and "record 99\\r\\n" in line for line in out),
+              "declined recovery diagnostic omitted the offending header")
+        bad_record.unlink()
+
+        # The watchdog holds its descriptor until it appends resumed. Copy+unlink
+        # loses that append on POSIX and can fail under Windows sharing rules.
+        live = pending / "stall-20261112T120004Z.txt"
+        live.write_bytes(("Hookshot stall record 1\r\nrun_id: " + current_id +
+                          "\r\nversion: v-live\r\nreason: no present\r\n").encode("utf-8"))
+        live_stacks = live.with_suffix(".stacks.txt")
+        live_stacks.write_bytes(b"Hookshot stall stacks 1\r\nthreads: 0 (limit 512; best effort, not simultaneous)\r\n")
+        with live.open("ab") as producer:
+            folders, out = run(exe, "recover-empty", game, str(now_log), home, user, windows)
+            check(folders == [""] and any("same_run=1" in line for line in out), "current stall announced as a previous run")
+            ended = pending / "unclean-20261112T120005Z.txt"
+            ended.write_text("Hookshot unclean record 1\nrun_id: " + old_id + "\nversion: v-ended\nreason: ended without a clean exit\n",
+                             encoding="utf-8")
+            folders, _ = run(exe, "recover", game, str(now_log), home, user, windows)
+            mixed = game_path / folders[0]
+            bundle(mixed, home, user, game)
+            check(not (mixed / live.name).exists() and live.exists() and not ended.exists() and
+                  hw.section((mixed / "report.txt").read_text(encoding="utf-8"), "Hookshot version") == "v-ended",
+                  "mixed recovery attributed the current stall/version to the ended run")
+            folders, _ = run(exe, "plain", game, str(now_log), home, user, windows)
+            live_report = game_path / folders[0]
+            bundle(live_report, home, user, game)
+            check(live.exists() and live_stacks.exists() and (live_report / live.name).exists() and
+                  "pending source retained for resume updates" in (live_report / "report.txt").read_text(encoding="utf-8"),
+                  "manual report consumed a still-open current stall")
+            producer.write(b"resumed: yes, after 11 s\r\n")
+            producer.flush()
+        check("resumed: yes, after 11 s" in live.read_text(encoding="utf-8"), "late resume append was lost")
+        folders, _ = run(exe, "plain", game, str(now_log), home, user, windows)
+        bundle(game_path / folders[0], home, user, game)
+        check(not live.exists() and not live_stacks.exists(), "completed current stall was not consumed")
+
+        # A known old-run unresolved stall is immutable after that process ended.
+        old_stall = pending / "stall-20261112T120006Z.txt"
+        old_stall.write_text("Hookshot stall record 1\nrun_id: " + old_id + "\nreason: no present\n", encoding="utf-8")
+        folders, _ = run(exe, "recover", game, str(now_log), home, user, windows)
+        check(not old_stall.exists() and (game_path / folders[0] / old_stall.name).exists(), "old stall was never consumed")
 
         # Metadata never reads payloads; only an explicit, validated local slot
         # selection can copy them, and neither the ZIP nor its manifest marks them shareable.

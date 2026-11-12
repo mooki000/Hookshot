@@ -446,6 +446,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   The folder is shown under the row's help. An unclean end
   does not prove a crash. A resumed stall is included only on a manual report. Failed copies retain
   the originals; valid records keep their incident names. The game does not inspect live-run markers.
+  An unresolved stall still belonging to this run is copied without removing its pending original,
+  so a later “resumed” update is not lost. Unknown run identity is treated the same way.
   **Local save copy, off by default:** `RX_VK_BUG_REPORT_SAVE=slot_00` (or another `slot_XX`) copies
   that player-selected slot into `save/` in the report folder. Invalid/missing slots are refused.
   This is a best-effort local snapshot while play continues, not a proven checkpoint. It is never
