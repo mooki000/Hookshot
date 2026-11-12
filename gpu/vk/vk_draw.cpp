@@ -2376,7 +2376,8 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     if (!p.mesh) {
         dyn.push_back(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY);
         dyn.push_back(VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE);
-        dyn.push_back(VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
+        // The fallback vertex stage reads records by vertex index, with no vertex buffers bound.
+        if (!p.fallback) dyn.push_back(VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
     }
     if (dev.eds3_blend) {
         dyn.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
