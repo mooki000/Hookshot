@@ -631,6 +631,8 @@ or input's synchronous log while refusing an old startup line; as the first step
 UTF-8 cursor rules. A step inserted between an action and its expectation changes that default cursor.
 
 Output defaults to a unique folder under `work/control-scenarios`; an explicit `--out` must be new or empty.
+The output root is resolved once; screenshot requests use that absolute root and artifacts retain the bridge's returned
+absolute path, so a Windows short-name input may be recorded with its long spelling.
 `transcript.json` is the plain result, `transcript.jsonl`/`transcript.txt` retain events, and the owned session keeps
 its manifest, log and default shots under `run/`. A named shot is under the output's `shots/`. The first failed step
 stops the sequence; these files remain. Owned runs are always quit and waited for in `finally`, with termination

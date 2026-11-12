@@ -92,7 +92,7 @@ class Scenarios(unittest.TestCase):
         self.assertEqual([r["option"]["value"] for r in settings], [3, 2])
         shot = self.folder / "out" / "shots" / "capture.png"
         self.assertTrue(shot.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
-        self.assertEqual(result["artifacts"][0]["path"], str(shot))
+        self.assertTrue(os.path.samefile(result["artifacts"][0]["path"], shot))   # (Windows short/long names are one file)
         saved = json.loads((self.folder / "out" / "transcript.json").read_text())
         self.assertEqual(saved, result)
         self.assertIn("set_setting", (self.folder / "out" / "transcript.txt").read_text())
