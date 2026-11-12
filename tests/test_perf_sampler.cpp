@@ -15,10 +15,16 @@ static std::atomic<unsigned> made{0}, sampled{0};
 static std::atomic<bool> wrong_thread{false};
 static std::atomic<unsigned> invalid_temp{0}, invalid_use{0}, cpu_reports{0};
 static std::thread::id caller;
+static std::mutex first_sample_mu;
+static std::condition_variable first_sample_ready;
+static bool published_before_first_read = false;
 struct Fake final : pm::Reader {
     void begin(int64_t, pm::Mask) override {
         if (std::this_thread::get_id() == caller) wrong_thread = true;
-        sampled++;
+        if (sampled.fetch_add(1) == 0) {
+            std::unique_lock lock(first_sample_mu);
+            first_sample_ready.wait(lock, [] { return published_before_first_read; });
+        }
     }
     pm::Value read(pm::Metric metric) const override {
         if (metric == pm::kCpuProcess) return pm::Value::of(175);
@@ -75,6 +81,9 @@ int main(int argc, char** argv) {
     snapshot.values[pm::kTextureUsed] = pm::Value::of(4096);
     snapshot.values[pm::kTextureBudget] = pm::Value::of(8192);
     CHECK(sampler.publish(snapshot));
+    // Keep this authored publication deterministic: the production producer is allowed to miss a try-lock.
+    { std::lock_guard lock(first_sample_mu); published_before_first_read = true; }
+    first_sample_ready.notify_one();
     await_samples(2);
     // Read from another stream while the sampler is alive: a completed sample is flushed, not waiting for close.
     namespace fs = std::filesystem;
