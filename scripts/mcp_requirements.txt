@@ -1,0 +1,2 @@
+# Optional local MCP server and its protocol tests, not the game/build pipeline.
+fastmcp==4.1.3

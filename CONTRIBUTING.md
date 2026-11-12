@@ -268,6 +268,11 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
   that these four are still used only there, and flag any other use. Keep line endings LF (`.gitattributes`).
 - New code has to be GPL-compatible. See below.
 
+The optional local MCP adapter and its protocol tests are a narrow exception: they use the exact FastMCP pin in
+`scripts/mcp_requirements.txt`, installed separately in CI on both systems. No game, build pipeline, control client,
+fake bridge or general documentation check may depend on it. Use a separate virtual environment and `python -I`;
+see [the MCP guide](docs/mcp.md). This exception is proposed for this tool alone, not for other scripts.
+
 ## Commits and pull requests
 
 1. Fork the repository and branch from `main`. Name the branch for the change: `fix/...`, `linux/...`, `builder/...`,

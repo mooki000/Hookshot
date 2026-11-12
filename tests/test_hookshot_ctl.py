@@ -38,6 +38,7 @@ options = {"text_speed": 3, "fps_counter": 0}
 
 
 def png(path):
+    # Nicholas Gower's #1025 used an authored tiny PNG for end-to-end image tests; no game data is needed.
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
     data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 2, 0, 0, 0))
@@ -77,6 +78,9 @@ if os.name == "nt":   # a named pipe, through ctypes: one synchronous handle a c
         def write(self, data):
             n = wintypes.DWORD(0)
             k.WriteFile(self.h, data, len(data), ctypes.byref(n), None)
+        def alive(self):
+            n = wintypes.DWORD(0)
+            return bool(k.PeekNamedPipe(self.h, None, 0, None, ctypes.byref(n), None))
         def flush_and_exit(self):
             k.FlushFileBuffers(self.h)   # (the reply read before the process and its pipe go)
             os._exit(0)
@@ -92,11 +96,15 @@ else:
     srv.listen(4)
     class Conn:
         def __init__(self, c):
+            self.c = c
             self.f = c.makefile("rwb", buffering=0)
         def __iter__(self):
             return iter(self.f)
         def write(self, data):
             self.f.write(data)
+        def alive(self):
+            import select
+            return not select.select([self.c], [], [], 0)[0] or bool(self.c.recv(1, socket.MSG_PEEK))
         def flush_and_exit(self):
             os.unlink(path)
             os._exit(0)
@@ -153,6 +161,18 @@ def serve(f):
             # (gpu/vk/vk_replay.cpp, shot publication: exact success-line format)
             print("vk: present %d written to %s (the control bridge)" % (r["present"], dest), flush=True)
         elif cmd == "wait":
+            if req.get("event") == "state" and req.get("state") == "never":
+                log.write(json.dumps({"cmd": "_wait_begin", "id": rid}) + "\n")
+                end = time.monotonic() + req.get("timeout", 60)
+                while time.monotonic() < end and f.alive():
+                    time.sleep(0.01)
+                alive = f.alive()
+                log.write(json.dumps({"cmd": "_wait_end", "cancelled": not alive}) + "\n")
+                if not alive:
+                    return
+                r.update(ok=False, error="timeout", message="not met in time")
+                f.write((json.dumps(r) + "\n").encode())
+                continue
             if req.get("event") == "loading_end" and req.get("timeout", 60) <= 1:
                 r = {"id": rid, "ok": False, "frame": frame[0], "error": "timeout", "message": "not met in time"}
             else:

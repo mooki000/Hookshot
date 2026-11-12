@@ -1,331 +1,237 @@
 # Automated tests through MCP
 
-`scripts/hookshot_mcp.py` is a [Model Context Protocol](https://modelcontextprotocol.io) server for automated in-game
-tests. It launches a built Hookshot, drives the same timed controller input a test script uses, and asks the renderer
-for a screenshot on demand. Screenshots come back as MCP image content, so an agent can look at the game after every
-step.
+`scripts/hookshot_mcp.py` is an optional [Model Context Protocol](https://modelcontextprotocol.io) server for local
+in-game checks. It starts a built Hookshot, sends frame-timed controller input, reads state and options, and captures
+PNG files. It is a separate stdio process, not part of the game. It opens no network listener.
 
-The server is a separate Python process. It is not linked into `hookshot.exe` and needs no game files of its own.
+This guide and the protocol-test approach come from Nicholas Gower's [#1025](https://github.com/NotRexed/Hookshot/pull/1025).
+His guide and checks are retained in the import history. The adapter now calls the standard-library
+[control client and sessions](control.md#sessions); it adds no game-side command, file transport or log parser.
+The command-line client works without MCP. The scenario runner and contributor-process proposals from #1025 are
+separate work, not requirements of this server.
+This server is part 2 of 3, stacked on [#2904](https://github.com/NotRexed/Hookshot/pull/2904);
+review only the commits above it. The third part is the separate scenario runner.
 
 ## Install
 
-The MCP server uses the official Python SDK (Python 3.10 or newer):
+Use Python 3.12 or newer and a virtual environment. Install the exact optional pin, **FastMCP 4.1.3**, separately
+from the game's requirements. Its dependencies are resolved by pip; the file is not a lock of every transitive package.
 
-```powershell
-python -m pip install "mcp==2.3.0"
-python -I scripts/hookshot_mcp.py --check
+```sh
+python -m venv work/mcp-venv
+work/mcp-venv/bin/python -m pip install -r scripts/mcp_requirements.txt
+work/mcp-venv/bin/python -I scripts/hookshot_mcp.py --game-dir GAME_DIR
 ```
 
-`--check` prints the executable, image, romfs, save folder and run folder it would use, and exits non-zero if one is
-missing.
+On Windows the interpreter is `work\mcp-venv\Scripts\python.exe`. Use that same interpreter in your MCP host.
+A missing or different SDK prints one install line to stderr and exits non-zero. Nothing installs itself.
+The server's stdout contains only MCP messages; diagnostics use stderr.
 
-The defaults are the standalone build:
-
-| What | Default |
-|---|---|
-| Executable | `work/sa/build/hookshot.exe` (or `hookshot` on Linux) |
-| Image | `work/sa/image/image.bin` |
-| RomFS | the dump recorded in `work/dump.txt`, plus `/romfs` |
-| Saves | `work/mcp/user` |
-| Run files | `work/mcp/runs/<timestamp>-<pid>/` |
-| Shader/pipeline caches | `work/mcp/cache/` |
-
-For a game folder made by HookshotBuilder or `nx2/make_game.py`, pass `--game-dir`, or set
-`HOOKSHOT_MCP_GAME_DIR`. Individual paths can be set with `--exe`, `--image`, `--romfs`, `--user` or their
-`HOOKSHOT_MCP_*` environment variables.
-
-## MCP host configuration
-
-OpenCode (`opencode.json`, V2): servers live under `mcp.servers`, and a server is connected unless it is `disabled`.
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "servers": {
-      "hookshot": {
-        "type": "local",
-        "command": ["python", "-I", "C:/path/to/Hookshot/scripts/hookshot_mcp.py"],
-        "environment": {
-          "HOOKSHOT_MCP_GAME_DIR": "C:/Games/Hookshot"
-        }
-      }
-    }
-  }
-}
-```
-
-Claude Desktop:
+For a host using `mcpServers`, use absolute paths:
 
 ```json
 {
   "mcpServers": {
     "hookshot": {
-      "command": "python",
-      "args": ["-I", "C:/path/to/Hookshot/scripts/hookshot_mcp.py", "--game-dir", "C:/Games/Hookshot"]
+      "command": "C:/src/Hookshot/work/mcp-venv/Scripts/python.exe",
+      "args": ["-I", "C:/src/Hookshot/scripts/hookshot_mcp.py", "--game-dir", "C:/Games/Hookshot-test"]
     }
   }
 }
 ```
 
-The script finds the repository from its own location, so the host's working directory does not matter. Use an
-absolute path to the script.
+The server defaults to `work/control-runs` under the checkout. `--root` selects another run parent.
+`--exe`, `--image`, `--romfs`, `--cwd` and repeated `--env NAME=VALUE` configure the launch below the tools.
+A builder folder uses its `bin` executable, not its root launcher. `--cwd` requires `--image`.
+Use an owned game copy: settings and caches are not isolated by copying saves.
+
+On a shared test machine, configure `--wrapper '["admission-program","argument"]'` on the **server**, never in a
+tool call. The wrapper must run the remaining argv unchanged and wait for it. It holds admission around the session
+supervisor's whole lifetime, not just the launch call. There is no shell expansion and no second GPU lock.
+An already admitted driver can instead keep its admission alive around the server and all of its runs.
 
 ## Tools
 
-| Tool | What it does |
+All tools have result models and read-only/destructive hints. These hints describe effects; they are not permissions.
+`run` is a returned `run_id` or a run folder. Omit it to use the most recently launched or attached run.
+Results preserve the session or bridge's plain data, under `run` or `reply`; status keeps both `run` and `bridge`.
+
+| Tool | Effect | What it does |
+|---|---|---|
+| `launch` | Changes files/processes | Start a windowless, muted test profile with an owned user folder; optionally copy `save` and `slot`; choose `ready=bridge`, `present` or `play`. |
+| `runs` | Read-only | Page through saved manifests in the configured root (`offset`, `limit`, at most 100); return resource IDs. |
+| `show` | Read-only | Read a manifest, even after exit. |
+| `attach` | Selects a session | Select an existing live run after checking process identity; do not adopt or signal an arbitrary process. |
+| `status` | Read-only | Return the manifest and bridge status separately, without overwriting their distinct states. |
+| `press` | Changes game state | Hold buttons for `frames` after delay `at`; exclusive input and completion replies by default. |
+| `stick` | Changes game state | Hold the `left` or `right` analog stick; x/y in -1..1, positive y up; centered sticks work. |
+| `sequence` | Changes game state | Send up to 256 frame steps, or a script with explicit `units=frames` or `hos`. |
+| `release` | Changes input state | Release abandoned queued inputs; `all=true` also releases other connected clients' inputs. |
+| `screenshot` | Writes a file | Capture Vulkan PNG in the run's shots folder; `inline=false` by default; opt-in image at most 4 MiB. |
+| `wait` | Read-only | Wait for `present` frames, absolute `frame`, `state`, `in_play`, `map`, loading changes, or explicit `event=wall` seconds. |
+| `options` | Read-only | Read supported Insert-menu value rows, or one `name`; not the Debug tab's actions. |
+| `set_option` | Persists settings | Change `name`/`value` through the menu setter; report the actual applied value. |
+| `teleport` | Changes game state | Without `to`, list destinations; otherwise request a destination and then wait for its map. |
+| `age` | Changes game state | Request `child` or `adult`, or toggle; then wait for reload completion. |
+| `saves` | Read-only | Read the mounted save folder and slot metadata; no force-save, editing or checkpoint validation. |
+| `slots` | Read-only | Return the same save-slot metadata as the command-line client's slots view. |
+| `logs` | Read-only | Read a tail (`lines`) or bytes from `since`; return a byte cursor and truncation flags. |
+| `expect_log` | Read-only | Wait for literal, case-sensitive `text` after a required `since` byte cursor. |
+| `stop` | Ends a process | Return the owner's exact quit/exit receipt; force is opt-in with `terminate=true`; not save-safe. |
+| `finish` | Updates metadata | Mark a dead orphan run finished; refuse live owners/games; never invent an exit code. |
+
+Buttons: `A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN`, plus bridge stick-direction names.
+Presses and sticks use game-present frames, not wall time. A waited input returns `start` and `end` when completed;
+`wait=false` acknowledges queueing only. Use `release` to cancel those abandoned queued inputs.
+Each run's calls are serialized; calls on different runs can proceed independently. Cancelling a bridge wait closes
+its dedicated connection and joins the worker before another call uses the run. It does not stop the game.
+Local lifecycle/log operations finish their bounded session call before cancellation returns. Launch readiness has
+its own timeout after admission; the admission wrapper owns the queue and total lifetime limits.
+
+`sequence(steps=[...])` uses frame-valued `at` and `frames`, with `buttons` and optional `lx`, `ly`, `rx`, `ry`.
+Alternatively `script="0.025:A/25,1:B/1", units="hos"` uses seconds before `:` and milliseconds after `/`.
+The control client converts at 60 presents/second, nearest frame with halves up, and a positive hold is at least one
+frame: this example becomes `(at=2, frames=2)` and `(at=60, frames=1)`. Frame generation adds no input frames.
+No `settle_ms` is hidden in a press: use a frame/state wait, or an explicitly labelled wall wait.
+
+Outputs are bounded to 262,144 JSON bytes. Logs return at most 65,536 source bytes and 2,000 tail lines; `more=true`
+means continue at `cursor`. Oversized structured results are errors, not silently incomplete successes.
+`Failed` errors retain the control client's category in the tool error text as JSON: `code=1` game refusal,
+`2` usage/file/connection error, `3` timeout. A timed-out stop is different: it returns the owner's manifest with
+`process_exited=false`, and the game stays owned. Inspect a result before retrying any mutation.
+
+## Resources
+
+Use the `run_id` from launch, attach, show or runs. After restarting the server, call runs or attach to register it.
+These are resource templates, advertised by `resources/templates/list`.
+
+| Resource template | Content |
 |---|---|
-| `launch` | Start a run. Headless, muted, Vulkan and script-only by default. |
-| `stop` | Ask the game to quit (`!quit`), then terminate if it does not. Safe when nothing is running. |
-| `status` | Process state, renderer, last screenshot and recent log lines. |
-| `press` | Press or hold Switch buttons: `A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN`, plus the stick direction names `LUP` ... `RRIGHT`. |
-| `stick` | Move the left or right analog stick with `x`/`y` in `-1..1` (positive y is up). |
-| `sequence` | Queue a timed multi-step input sequence in one live input line. |
-| `screenshot` | Capture the current presented frame as a PNG (1280x720 on Vulkan), inline and on disk. |
-| `wait` | Wait for wall time while the game runs. |
-| `logs` | Return recent log lines, optionally filtered. |
-| `settings` | Every setting the Insert menu shows, the cheat rows when the cheat menu is on, and the lists they use. |
-| `set_setting` | Change one of the player's settings by its key, as the menu does; kept in `hookshot_options.ini`. |
-| `cheat` | Act on a cheat row (Gameplay → Cheats) directly: toggles, time, teleport, age, pouch and inventory. |
+| `hookshot://runs/{run_id}/status` | JSON manifest and current bridge status, as the status tool. |
+| `hookshot://runs/{run_id}/log` | JSON tail of 100 lines, at most 65,536 source bytes, with its cursor. |
+| `hookshot://runs/{run_id}/last-screenshot` | Last acknowledged PNG in the run's shots folder, at most 4 MiB. |
 
-Resources: `hookshot://log`, `hookshot://last-screenshot` and `hookshot://status`.
+Images are files first. A screenshot's explicit relative path is relative to the run folder; an absolute path is
+used as supplied and can replace an existing file. Inline reading requires the bridge to return the requested path.
+The image resource refuses paths outside the run's shots folder; use the returned file path for those captures.
+A missing or oversized image gives an error. There is no automatic resize and no desktop capture.
 
-A typical session:
+## A worked session
+
+These are MCP tool calls, not Python functions. Start from a disposable game copy and your own save source:
 
 ```text
-launch(wait_ready=true)
-press(["PLUS"], hold_ms=200)
-wait(800)
+launch(save="SAVE_FOLDER", slot="03", ready="present")
+status()
+wait(event="state", state="menu")
+press(buttons="A", frames=8)
+wait(event="present", frames=60)
+status()
+```
+
+Inspect the current state and picture, then advance the visible title/Continue/Load UI as needed. A copied save does
+not bypass these menus. Once play is observed, the ordinary check can continue:
+
+```text
+wait(event="in_play")
+stick(which="left", x=0.25, y=0, frames=6)
+stick(which="right", x=0, y=0.25, frames=6)
+sequence(steps=[{"at": 12, "buttons": "B", "frames": 8}])
+release()
 screenshot()
-sequence([{"at_ms": 0, "buttons": ["A"], "hold_ms": 200}])
-settings()
-set_setting("text_speed", 3)
-cheat("heart_protection", 1)
+screenshot(inline=true)
+options(name="fps_counter")
+set_option(name="fps_counter", value=true)
+options(name="fps_counter")
+logs(lines=20)
+saves()
+stop()
 stop()
 ```
 
-`press` waits for the game to acknowledge the live input line, then for the hold plus `settle_ms`. For a long hold
-where screenshots are wanted in the middle, pass `wait=false`, then call `wait` and `screenshot` at the chosen times.
+Keep the option's old value and restore it in your owned copy when the check ends. To assert on a new log line, take
+`logs(lines=0)` first and pass its cursor to `expect_log(text=..., since=...)` after the action. Use a line this
+build actually prints. The full log and all screenshots remain in the run folder.
 
-## Launch options
-
-| Option | Meaning |
-|---|---|
-| `game_dir`, `exe`, `image`, `romfs`, `user` | Paths for this run. |
-| `run_dir`, `cache_dir` | Where the log/screenshots and the shader caches go. |
-| `window`, `focus`, `window_size` | Show the game window; headless otherwise. |
-| `audio` | Play sound. Off by default. |
-| `backend` | `auto`, `vulkan` or `webgpu`. |
-| `script_only` | Ignore physical pads, keyboard and mouse (default true). |
-| `frame_clock` | Advance scripted input at 60 presents per second instead of wall time. |
-| `exclusive` | Do not merge physical pads while a press is active. |
-| `env_file` | Read `hookshot_env.txt` first (the server then overrides its own control switches). |
-| `fresh_user` | Use a save folder inside this run instead of `work/mcp/user`. |
-| `extra_env` | Extra switches such as `RX_VK_FLASH=1`. The server's control switches are reserved. |
-| `cheats` | Turn the cheat menu on (`HOS_OOT_CHEATS=1`) so `cheat` works. Off by default, as the game is. |
-| `force` | Start even if another `hookshot` process is detected. |
-| `wait_ready` | Wait for the first screenshot before `launch` returns. |
+Bridge readiness only means a status reply. Present readiness can still be a black startup frame. Play readiness
+requires presents, the draw-count play heuristic, no stall, and known-false event/loading values. It does not prove
+snapshot freshness or drive the title. `state=play` alone is not proof an event is over; inspect `bridge.game` too.
+Teleport acceptance is not arrival. An age change can reload the same map name, so use `loading_end`, not just map
+identity. These are the [bridge's limits](control.md#known-limits), not new MCP guarantees.
 
 ## Driving the game
 
-What a run looks like in practice, and what the game's own UI does with the input.
+The following are **Nicholas Gower's observations from #1025**, not new universal timing or performance claims.
+The control names are retained; the old fixed sleeps are replaced with state waits and inspected pictures.
 
 ### Start-up
 
-- `wait_ready` returns on the first *presented* frame, not on a playable game: on a cold cache that frame is black while
-  the shaders are prepared (38,809 programs, tens of seconds). Wait for the title before asserting on the picture: the
-  intro camera pan runs first, then the title fades in.
-- With saves in the save folder the title offers **Continue**; Continue opens a **Load / Cancel** dialog that takes one
-  more `A`, then the map loads (about a minute, with a Triforce loading frame). With a fresh save folder there is no
-  Continue: `A` starts New Game and the intro cutscene.
-- The fast, repeatable setup is a copied save folder plus the game folder's own shader and pipeline caches as
-  `cache_dir`. A second game instance runs, but at roughly half the frame rate and with slower loads.
+- The first presented frame can be black while startup work is still in progress. Wait for the menu and inspect it.
+- A populated save folder offers Continue, then Load / Cancel; another A confirms loading. An empty folder starts a
+  new game and its introductory sequence. Wait for play and known-false event/loading before movement assertions.
+- A copied save and an owned game/cache folder make repeatable checks easier. Cache warmth and competing runs affect
+  startup; no fixed duration or speed ratio is promised here.
 
-### The controls it injects
+### Controls and pause
 
-These are the remake's own controller inputs; `press`/`stick`/`sequence` write them to the live input file, and the
-game's `hid: live input at …` log line is the proof they arrived. A loading screen or an open pause menu delays the
-game's next read.
-
-| Input | Button |
+| Action observed | Input |
 |---|---|
-| Use item | `ZR` |
-| Quick select items | `L`, `R` |
-| Pause menu | `PLUS` |
-| Map | `MINUS` |
-| Actions, dash (hold) | `A` |
-| Put away | `B` |
-| Jump | `X` |
-| Attack | `Y` |
-| Target | `ZL` |
-| Rotate the camera | `RS` (press the right stick) |
-| Move | the left stick (`stick`), the camera the right stick |
+| Use item; quick select | `ZR`; `L`, `R` |
+| Pause; map | `PLUS`; `MINUS` |
+| Action/dash; put away | `A`; `B` |
+| Jump; attack; target | `X`; `Y`; `ZL` |
+| Camera reset; movement/camera | `RS`; left/right stick |
 
-### The pause menu
+Nicholas observed that pause opens the last tab (Collection, Equipment, Items or System). D-pad movement at a row's
+edge and ZR change tabs; a gold cell marks the equipped or quick-slot item. He verified equipment changes with A
+and the visible model, but did not find selecting an Items cell to assign it. Pause stops the player update where
+debug actions are taken, even while controller reads continue. Close pause and wait for play before such actions.
+A completed bridge input proves its scheduled frames elapsed, not that a particular UI accepted the button.
 
-- It opens on the last tab: Collection, Equipment, Items, System.
-- The D-pad moves between cells, and at a row's edge it changes tab. `ZR` also changes tab inside the menu. A gold cell
-  marks the equipped item (Equipment) or the quick-slot item (Items).
-- `A` acts on the cell: on Equipment it equips (verified by swapping shields and watching the model), while selecting an
-  item on Items was not found to assign it.
-- The menu **pauses the player update**, which is where the game takes cheat actions: they wait until it closes. Live
-  commands still arrive, because controller input is still polled.
+### Persistence and iteration
 
-### What persists
+Nicholas observed that reopening the pause menu refreshes its grid from saved game state. A transient memory poke is
+not a lasting item change. Use the game's own UI/setter. This adapter exposes no guest-memory writes or cheat fallback.
+Builds remain separate command-line work. Keep saves and caches out of git, copy saves per test, and keep pictures as
+files until visual inspection is needed. No build-time or frame-rate estimate from #1025 is a promise for another PC.
 
-The pause menu refreshes its item grid from the game's saved state (GameData) when it opens, so an in-memory write to
-the selection or to an item shows for a moment and is then replaced. A change meant to last goes through the game's own
-setter or its UI, not a poke at a field. [actions.md](actions.md) records where the equipment ids and the item grid live
-for build `e0f3ccfa`, and what is still unmapped.
+## Not covered
 
-### The loop
+This cutover is deliberately not full parity with #1025. No old capability disappears without naming it here.
 
-- Build once, then iterate: `HOOKSHOT_KEEP_BUILD_FILES=1` keeps the lifted C and the objects, so the next build of the
-  same tree is a compile (about 15 seconds) instead of a lift and a full compile (15 to 20 minutes).
-- Keep saves and caches out of the repository, copy a save folder per test, write screenshots to files (`inline=false`;
-  each is 1280x720 and about 2.7 MB inline) and use `logs(pattern=…)` for acknowledgements.
-- A whole sequence of these steps is one command with [a scenario file](#scenario-file).
-
-## Settings and cheats
-
-`settings()` reads the Insert menu: every row of its Graphics, Gameplay and Controls tabs (the row's key, its label, the
-value, its range, and the text the player sees), and — when the cheat menu is on — the Cheats page's rows with the
-teleport destinations, the pouch's items and the inventory's items and counts. The keys are the names
-`hookshot_options.ini` uses.
-
-`set_setting(name, value)` goes through the menu's own setter: it clamps to the row's range, applies a quality preset or a
-control layout the way the menu does, marks the settings Custom, and writes `hookshot_options.ini`. A row whose text says
-"(restart)" keeps its value but takes effect at the next launch, exactly as when a player changes it.
-
-```text
-settings()                               # the rows, their values and their ranges
-set_setting("frame_generation", 0)               # frame generation off
-set_setting("resolution", 1)             # a fixed 100%, not Auto
-set_setting("text_speed", 3)             # instant dialogue
-set_setting("show_fps", 1)
-```
-
-`cheat(name, value=0, item=None)` acts on the cheat menu directly. The game keeps that menu behind `HOS_OOT_CHEATS=1`, so
-the run must be started with `launch(cheats=true)` (or with the setting in `hookshot_env.txt`, which the server reads).
-
-| Cheat | What to pass |
+| Original feature not carried | Why; native change needed |
 |---|---|
-| `heart_protection`, `no_clip_flight`, `free_camera` | `value` 1 on, 0 off |
-| `mark_position`, `return_to_mark`, `switch_age` | nothing else |
-| `set_time` | `value`, the hour 0 to 23 |
-| `teleport` | `item`, a destination's name or index (from `settings()`) |
-| `pouch` | `item`, a pouch item, and `value`, the amount to add or remove (-10 to 10) |
-| `inventory` | `item`, an inventory item, and `value`, the count wanted (-1 unlocks or relocks it) |
+| Cheats other than teleport and age: heart protection, flight, free camera, mark/return, time, pouch and inventory | The bridge does not expose these debug actions or their catalogues; they need typed native bridge queries/actions with game-thread acknowledgement. |
+| WebGPU on-demand screenshots | The existing shot callback is Vulkan-only; WebGPU needs an implementation of the same native callback, not another request file. |
+| Run-long exclusion of physical input | Bridge exclusivity covers each queued input's delay and hold, not idle gaps; a native input-boundary policy or lease is needed. |
+| Save-safe quit | Neither the old live-input quit nor the current bridge waits for saving; a native save-I/O barrier and coordinated shutdown are needed. |
 
-```text
-launch(cheats=true, wait_ready=true)
-cheat("heart_protection", 1)
-cheat("set_time", 18)
-cheat("teleport", item="Kakariko Village")
-cheat("inventory", item="Hookshot")          # unlocked
-cheat("inventory", item="Bombs", value=20)   # twenty bombs
-cheat("pouch", item="Arrows", value=5)
-```
+## Trust and lifetime
 
-The server writes these as live input lines (`!settings`, `!setting <key> <value>`, `!cheat <name> <value> <extra>`) and
-the game answers in its log, which the server reads back. Settings and cheats are therefore the Vulkan back end's: the
-WebGPU fallback has no Insert menu and `settings()` says so. A cheat acts on the game in play; at the title screen there is
-no player to give hearts or a destination to travel to yet.
+**It runs as you and trusts its MCP host.** This is a local same-user tool, not a sandbox. The configured executable,
+environment and admission wrapper run with your authority. Tool-supplied game/save/run/screenshot paths also carry
+that authority. Use only trusted hosts, agents and manifests. Do not expose it to an untrusted client. There is no
+arbitrary-shell tool, network transport, memory-write tool, package installer or login operation.
 
-The game-side mechanisms behind player actions that are not menu settings (equipment, the item button, the ocarina) are
-mapped in [actions.md](actions.md).
+The session supervisor, not the MCP connection, owns the game. End of input or server exit does not kill launched or
+attached runs; their manifests remain discoverable. Explicitly stop your disposable runs before ending the client.
+A failed readiness check is cleaned up by the session layer and leaves a failed manifest and log.
+Stopping asks for quit and reports the real exit receipt. `save_drain` stays `unsupported`, never “clean”. Forced
+termination needs `terminate=true` and the original owner; no attaching caller kills a PID read from a manifest.
+A copied save limits damage to that copy but is not evidence of a safe checkpoint.
 
-## Scenario file
+## Game-free checks
 
-`scripts/mcp_scenario.py` runs a JSON scenario against a built game through the same session code the tools use, so a
-repeated check is one command instead of a sequence of tool calls:
-
-```powershell
-python -I scripts/mcp_scenario.py scenario.json --game-dir I:\Hookshot --build
-```
-
-`launch` takes the launch options above; a step is one of `press`, `stick`, `sequence`, `wait`, `screenshot`,
-`settings`, `set_setting`, `cheat` or `expect_log`.
-
-```json
-{
-  "name": "title",
-  "launch": {"wait_ready": true},
-  "steps": [
-    {"press": {"buttons": ["A"], "hold_ms": 200}},
-    {"wait": {"ms": 2000}},
-    {"screenshot": {"path": "title.png"}},
-    {"expect_log": {"pattern": "hid: live input"}}
-  ]
-}
-```
-
-The run fails on the first press or sequence the game does not acknowledge, on a screenshot that never arrives and on
-an `expect_log` that does not match. Everything it makes goes to `work/mcp/scenarios/<name>/` (`transcript.txt` and the
-screenshots). `--build` rebuilds the folder first with `nx2/make_game.py --update` and `HOOKSHOT_KEEP_BUILD_FILES=1`,
-which keeps the build files for the next run, so later iterations are a compile rather than a full build; the toolchain
-the builder uses must be in the environment. `tests/test_mcp_scenario.py` runs the runner against
-`tests/fake_game.py`, so it is covered without a game.
-
-## How it works
-
-The server sets these for the game:
-
-```text
-HOS_INPUT_LIVE=<run>/input.txt
-HOS_INPUT_SCRIPT_ONLY=1
-HOS_INPUT_SCRIPT_BACKGROUND=1
-HOS_INPUT_EXCLUSIVE=1
-HOS_HEADLESS=1              (unless window=true)
-HOS_AUDIO=0                 (unless audio=true)
-HOS_OOT_CHEATS=1            (when cheats=true)
-RX_BACKEND=vulkan           (or webgpu)
-HOOKSHOT_NO_ENV_FILE=1
-RX_VK_SHOT_FILE=<run>/shot.request
-RX_SCREENSHOT_FILE=<run>/shot.request
-```
-
-`press`, `stick` and `sequence` append lines in the game's existing script syntax. Analog values use the `LX=`, `LY=`,
-`RX=` and `RY=` tokens added for this server. A screenshot writes the requested output path into `shot.request`; the
-Vulkan renderer (or the WebGPU fallback) deletes the request, writes the PNG on its next present, and logs
-`vk: present <n> written to <path>` (or `rx: screenshot ...`). The server waits for that line, returns the image, and
-reads the present/frame number from it.
-
-`HOOKSHOT_NO_ENV_FILE=1` stops the game from applying `hookshot_env.txt` a second time. The server reads that file
-first and then applies its own control switches, so useful test switches survive without letting a stale
-`HOS_HEADLESS` or `HOS_INPUT_LIVE` take over.
-
-The game's own `hookshot_options.ini` still applies: frame generation, resolution and similar settings can change what
-a screenshot looks like. Use a dedicated game folder or a clean options file when a test must be reproducible.
-
-## Safety and limits
-
-- Keep game files, saves and screenshots out of git. The default run folder is under `work/`, which is ignored.
-- Only one game runs at a time; `launch` refuses when another `hookshot` process is found unless `force=true`.
-- The server uses the game's ANSI file APIs: run, screenshot and game paths should be ASCII.
-- A screenshot is the game's presented frame, not the game window. Renderer overlays (the Insert menu, the FPS
-  counter) are not in it.
-- Input is controller input. The keyboard and mouse mappings are not simulated.
-- Live input is applied when the game next reads the controller; a loading screen can delay a queued press.
-- A cold launch can take a minute or two while shaders are prepared. `wait_ready` returns on the first presented frame, which
-  on a cold cache can be a black boot frame; call it again, or `wait` and `screenshot` until the title appears, before
-  asserting on the picture. `wait_ready` has its own timeout; call it again if the first call times out.
-- The server is developer tooling in `scripts/`, not a file shipped with the game.
-- **It runs as you and trusts its MCP host.** `launch` starts any executable it is given and passes `extra_env`
-  through (only the server's own control switches are reserved, so `PATH` and `LD_PRELOAD`-style variables included),
-  and `screenshot` unlinks and writes whatever path it is given. Use it with a host and an agent you trust, on your own
-  machine; do not expose it to an untrusted client.
-
-## Game-free test
-
-```powershell
+```sh
 python -I -B tests/test_mcp_server.py
+python -I -B tests/test_docs.py
+python -I -B tests/run_all.py
 ```
 
-The test speaks MCP to the server in memory, checks the input-line encoding and environment handling, and runs a
-fake Python game that answers live input and screenshot requests exactly as the host does. It needs the `mcp` package
-but no game build, GPU or game files.
-
-`tests/test_shot_request.py` compiles the renderer's `read_shot_request()` and checks the request-file rules, and
-`tests/test_docs.py` checks this page's tool/resource tables against the server. Both are part of
-`python -I -B tests/run_all.py --strict`.
+Use the venv interpreter for SDK checks. The real SDK client exercises tools/resources in memory, and a real stdio
+subprocess checks initialize, list, call, resource, error and end of input. The shared control fixture publishes an
+authored tiny PNG, following Nicholas's test idea, and keeps option state. Tests cover frame conversion, concurrent
+calls, cancellation, output bounds, failed launch cleanup and explicit force. General docs checks need no SDK.
+`RUN_ALL_MODULES = ["fastmcp"]` lets the runner skip only the SDK checks without the package; `--strict` fails a
+missing dependency. CI installs this optional dependency in a separate step on Linux and Windows. Game-free checks
+are not proof of Windows gameplay, a visible window, WebGPU capture or save-safe shutdown.
