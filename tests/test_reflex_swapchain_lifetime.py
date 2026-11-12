@@ -30,6 +30,7 @@ functions = '\n'.join(function(marker) for marker in [
     'uint64_t reflex_frame()', 'void reflex_game_submitted()', 'const void* reflex_submit_id(',
 ])
 fixture = r'''
+#define _CRT_SECURE_NO_WARNINGS
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
