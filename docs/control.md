@@ -429,6 +429,12 @@ Each command prints plain lines; `--json` prints the replies. `--sock` overrides
 when done, 1 for an error reply, 2 when there is no game or the usage is bad, and 3 for a timeout. `launch --data`
 sets `XDG_DATA_HOME` for the run, so it plays from saves of its own. `--env NAME=VALUE` adds switches.
 
+`launch` finds `bin/hookshot.exe` on Windows or `bin/hookshot` on Linux before the folder's top level. When `bin/`
+exists but its game is missing it refuses: the root executable is the Builder launcher, not a fallback game.
+`--exe FILE` selects a development executable. `--image FILE`, `--romfs DIR` and `--user DIR` pass the game's own
+arguments (the image is positional), on both platforms; see [the runtime parser](../host/hos_main.c) and
+[the game's command line](../readme.md#running-the-game-from-the-command-line).
+
 ## Known limits
 
 - **Windows** is built and its pipe tested in CI only (the windows-2022 runner): the bridge inside a Windows game build,
