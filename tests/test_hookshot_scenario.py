@@ -22,6 +22,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = Path(os.environ.get("HOOKSHOT_SCENARIO_SOURCE", ROOT / "scripts" / "hookshot_scenario.py"))
 COMPILER = "gcc"
+FIXTURE = Path(os.environ.get("HOOKSHOT_SCENARIO_FIXTURE_SOURCE", ROOT / "tests" / "scenario_control_test.c"))
 
 
 def load_module(path, name):
@@ -257,31 +258,37 @@ class NativeFrames(unittest.TestCase):
             libs = ["-ladvapi32"] if os.name == "nt" else ["-lpthread", "-lm"]
             command = [COMPILER, "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
                        "-Wno-format-truncation", "-D_GNU_SOURCE", "-D_CRT_SECURE_NO_WARNINGS", "-DHOS_CONTROL_NO_GAME",
-                       str(ROOT / "tests" / "scenario_control_test.c"), str(ROOT / "host" / "control.c"), "-o", str(exe)] + libs
+                       "-I", str(ROOT / "tests"), str(FIXTURE), str(ROOT / "host" / "control.c"), "-o", str(exe)] + libs
             subprocess.run(command, check=True)
             receipt = folder / "frames.csv"
+            # (the bridge's safety rule for the largest expected span, not a frame-rate assertion; the client adds 10 s)
+            timeout_ms = (30 + 78 / 10) * 1000
             scenario = {"version": 1, "launch": {"exe": str(exe), "ready": "bridge", "timeout": 5,
                                                   "env": {"SCENARIO_FRAME_FILE": str(receipt)}}, "steps": [
-                {"press": {"buttons": ["A"], "hold_ms": 25, "settle_ms": 0, "timeout_ms": 1000}},
-                {"stick": {"which": "right", "x": 1, "y": -1, "hold_ms": 50, "settle_ms": 0, "timeout_ms": 1000}},
+                {"wait": {"ms": 100}},   # (idle wall time must not advance this fixture's logical frame clock)
+                # (progress is input-driven; the derived safety bound catches a broken server without an hour-long receive)
+                {"press": {"buttons": ["A"], "hold_ms": 25, "settle_ms": 0, "exclusive": True, "timeout_ms": timeout_ms}},
+                {"stick": {"which": "right", "x": 1, "y": -1, "hold_ms": 50, "settle_ms": 0, "exclusive": True,
+                            "timeout_ms": timeout_ms}},
                 {"sequence": {"steps": [{"at_ms": 0, "buttons": ["B"], "hold_ms": 25},
                                          {"at_ms": 1000, "buttons": ["A"], "hold_ms": 100},
                                          {"at_ms": 1250, "stick": "left", "x": -1, "hold_ms": 50}],
-                              "settle_ms": 0, "timeout_ms": 1000}},
-                {"wait": {"frames": 2}},
+                              "settle_ms": 0, "exclusive": True, "timeout_ms": timeout_ms}},
             ]}
             result = m.run_scenario(scenario, game_dir=str(folder), out=str(folder / "out"))
             self.assertTrue(result["ok"], result)
-            replies = [r["result"] for r in result["transcript"] if r["event"] == "step"]
+            replies = [r["result"] for r in result["transcript"] if r["event"] == "step" and "start" in r["result"]]
             with receipt.open(newline="") as f:
                 frames = {int(row["frame"]): {k: int(v) for k, v in row.items()} for row in csv.DictReader(f)}
             press, stick, sequence = replies[:3]
+            self.assertEqual([(r["start"], r["end"]) for r in replies], [(0, 2), (2, 5), (5, 83)])
             self.assertEqual(press["end"] - press["start"], 2)
             self.assertEqual([frames[n]["buttons"] for n in range(press["start"], press["end"])], [1, 1])
             self.assertEqual(frames[press["end"]]["buttons"], 0)
             self.assertEqual(stick["end"] - stick["start"], 3)
             for n in range(stick["start"], stick["end"]):
                 self.assertEqual((frames[n]["rx"], frames[n]["ry"]), (32767, -32767))
+            self.assertEqual((frames[stick["end"]]["rx"], frames[stick["end"]]["ry"]), (0, 0))
             start = sequence["start"]
             self.assertEqual(sequence["end"] - start, 78)
             self.assertEqual([frames[n]["buttons"] for n in range(start, start + 2)], [2, 2])
@@ -289,8 +296,10 @@ class NativeFrames(unittest.TestCase):
             self.assertEqual([frames[n]["buttons"] for n in range(start + 60, start + 66)], [1] * 6)
             self.assertTrue(all(frames[n]["lx"] == -32767 for n in range(start + 75, start + 78)))
             self.assertEqual(frames[start + 78]["lx"], 0)
+            self.assertEqual([frames[sequence["end"]][k] for k in ("buttons", "lx", "ly", "rx", "ry", "exclusive")], [0] * 6)
             self.assertTrue(all(frames[n]["exclusive"] for n in range(start, start + 78)))
-            print("PASS: real controller frames: press 2, stick 3, sequence offsets 0/60/75, holds 2/6/3", flush=True)
+            print("PASS: idle clock 0; real controller frames 0..2, 2..5, 5..83; sequence offsets 0/60/75, holds 2/6/3",
+                  flush=True)
 
 
 if __name__ == "__main__":

@@ -629,6 +629,8 @@ Input fields ending in `_ms` really are **milliseconds**. They become integer ga
 with halves up, a positive hold at least one frame: `at_ms=1000, hold_ms=100` means offset 60 and hold 6.
 No seconds/ms script string is assembled. `settle_ms` and `wait.ms` are wall-clock waits that check the process remains
 live; they are not frame waits. The native fixture tests the actual controller frames, not the encoded request text.
+Its logical frame clock is frozen while idle and advances queued exclusive inputs without a per-frame sleep; wall-clock
+scheduler speed cannot change their recorded schedule. The bridge's ordinary safety deadline still bounds a broken test.
 
 By default, `expect_log` begins at the cursor taken **before the immediately preceding step**. That catches a shot
 or input's synchronous log while refusing an old startup line; as the first step it starts after readiness.
