@@ -2,6 +2,7 @@
 
 No game, GPU or audio device. --source also accepts a host with unimplemented float
 entry points: use no-op stubs for those, as the generated runtime stubs do.
+The extracted DSP keeps its real env_on dependency from hookshot_env.h.
 """
 import argparse
 from pathlib import Path
@@ -51,6 +52,7 @@ def main():
         (folder / 'audio_biquad.inc').write_text('\n'.join(chunks), encoding='utf-8')
         exe = folder / 'fixture.exe'
         subprocess.run([compiler, '-std=c11', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
+                        '-include', str(ROOT / 'gpu/vk/compat/hookshot_env.h'),
                         '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-parameter',
                         '-I' + str(folder), str(ROOT / 'tests/audio_biquad_test.c'), '-lm', '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True)

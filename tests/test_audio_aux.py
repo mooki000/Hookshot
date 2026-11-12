@@ -1,5 +1,7 @@
 """Exercise the actual Aux API and mixer with synthetic signals; no game or audio device.
 
+The extracted mixer keeps its real env_on dependency from hookshot_env.h.
+
 python -I -B tests/test_audio_aux.py [--cc clang] [--source host/nn_audio.c]
 """
 import argparse
@@ -73,6 +75,7 @@ int main(void) {
         (directory / 'audio_aux.inc').write_text('\n'.join(chunks), encoding='utf-8')
         exe = directory / 'audio_aux.exe'
         subprocess.run([args.cc, '-std=c11', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
+                        '-include', str(ROOT / 'gpu/vk/compat/hookshot_env.h'),
                         '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-parameter',
                         '-I' + str(directory), str(ROOT / 'tests/audio_aux_test.c'), '-lm', '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
