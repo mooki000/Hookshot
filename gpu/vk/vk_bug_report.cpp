@@ -425,7 +425,7 @@ std::string record_text(const std::string& text, const Inputs& in) {
         "host_backtrace", "guest_register", "guest_backtrace", "log_size_bytes", "log_tail_bytes", "log_mtime_utc",
         "log_tail_fatal", "log_tail_crash", "log_tail_device_lost", "record_complete", "last_log_age_ms",
         "log_progress_age_ms", "vcore_progress_age_ms", "timeout_s", "presents", "state", "stacks", "resumed",
-        "started", "crash_handler", "dump", "run_id"
+        "started", "crash_handler", "dump", "run_id", "termination_note"
     };
     std::istringstream lines(text);
     std::string line, out;

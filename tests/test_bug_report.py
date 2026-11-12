@@ -605,12 +605,15 @@ def main():
         bundle(result, home, user, game)
         check((result / resumed.name).exists() and not resumed.exists(), "manual report lost resumed stall")
         unclean = pending / "unclean-20261112T120002Z-7-2.txt"
-        unclean.write_text("Hookshot unclean record 1\nreason: ended without a clean exit\nversion: v2.0.14\n", encoding="utf-8")
+        termination_note = "termination_note: ended from outside or lost power, not necessarily a crash\n"
+        unclean.write_text("Hookshot unclean record 1\nreason: ended without a clean exit\nversion: v2.0.14\n" +
+                           termination_note, encoding="utf-8")
         folders, _ = run(exe, "recover", game, str(now_log), home, user, windows)
         result = game_path / folders[0]
         bundle(result, home, user, game)
         check("last run did not end cleanly; not evidence of a crash" in (result / "report.txt").read_text(encoding="utf-8"),
               "unclean end misclassified")
+        check(termination_note in (result / unclean.name).read_text(encoding="utf-8"), "unclean termination note lost")
 
         # Metadata never reads payloads; only an explicit, validated local slot
         # selection can copy them, and neither the ZIP nor its manifest marks them shareable.
