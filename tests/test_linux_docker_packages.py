@@ -26,7 +26,9 @@ def installs(text):
 
 
 def ppas(text):
-    return set(re.findall(r"add-apt-repository\s+(?:-y\s+)?(\S+)", text))
+    """Repository operands, not add-apt-repository's -y/--no-update flags."""
+    text = re.sub(r"\\\n", " ", text)
+    return set(re.findall(r"add-apt-repository\s+(?:-\S+\s+)*(\S+)", text))
 
 
 class LinuxDockerPackages(unittest.TestCase):
@@ -47,7 +49,16 @@ class LinuxDockerPackages(unittest.TestCase):
         self.assertEqual(sorted(ci - docker), [], "in the workflow, not in the Dockerfile")
         self.assertEqual(sorted(docker - ci), [], "in the Dockerfile, not in the workflow")
 
+    def test_ppa_options(self):
+        ppa = "ppa:example/testing"
+        for flags in ("", "-y ", "--no-update ", "-y --no-update ", "--no-update -y "):
+            with self.subTest(flags=flags):
+                self.assertEqual(ppas("timeout 180s add-apt-repository " + flags + ppa + " && apt-get update"), {ppa})
+        self.assertEqual(ppas("add-apt-repository -y \\\n --no-update " + ppa), {ppa})
+        self.assertEqual(ppas("apt-get update"), set())
+
     def test_ppas(self):
+        self.assertIn("ppa:ubuntu-toolchain-r/test", ppas(self.workflow), "the workflow's PPA was not found")
         self.assertEqual(ppas(self.docker), ppas(self.workflow))
 
 
