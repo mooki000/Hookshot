@@ -144,9 +144,15 @@ bool exists(const std::string& path, std::time_t* written = nullptr) {
     std::error_code ec;
     if (!fs::is_regular_file(path_of(path), ec) && !fs::is_directory(path_of(path), ec)) return false;
     if (written) {
+#ifdef _WIN32
+        // MSVC's file clock lacks to_sys; use the CRT's UTF-16 path/stat API.
+        struct _stat64 st{};
+        if (_wstat64(path_of(path).c_str(), &st) == 0) *written = st.st_mtime;
+#else
         const auto time = fs::last_write_time(path_of(path), ec);
         if (!ec) *written = std::chrono::system_clock::to_time_t(
             std::chrono::time_point_cast<std::chrono::system_clock::duration>(std::chrono::file_clock::to_sys(time)));
+#endif
     }
     return true;
 }
