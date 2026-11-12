@@ -116,13 +116,19 @@ void prompts_at_once(const Row&) {}
 /* PRESET */
 /* SET_ROW */
 /* RESOLUTION_SCALE */
+/* RESOLUTION_AUTO */
 /* WALK */
 std::recursive_mutex menu_mu;
 bool menu_refresh = false;
 void bridge_probe_first() {}
 bool bridge_row(int) { return true; }
-struct MkwVkSetting { int value; };
-void bridge_fill(int i, MkwVkSetting* out) { out->value = *rows[i].value; }
+struct MkwVkSetting {
+    char key[64], name[128], tab[32], text[256];
+    int value, lo, hi, step;
+    bool restart, fixed;
+};
+/* BRIDGE_FILL */
+/* GET */
 /* BRIDGE */
 int active_scale() { return ur::full_scale(upscaler()) ? 10000 : resolution_scale(); }
 void arrow_to(int engine) {
@@ -142,6 +148,7 @@ void fresh(int engine, int value) {
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     ini_file = argv[1];
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     const int engines[] = {ur::GAME, ur::DLSS, ur::FSR3, ur::FSR4, ur::OFF};
     // Every saved value, including all named qualities and hand-chosen slider stops.
     for (int engine : engines) for (int value = 0; value < ur::kValues; ++value) {
@@ -199,6 +206,13 @@ int main(int argc, char** argv) {
     fresh(ur::DLSS, 5);
     bridge_to(ur::GAME);
     CHECK(active_scale() == 5000);
+    MkwVkSetting shown{};
+    CHECK(menu_setting(1, &shown) == 1 && shown.value == 5);
+    CHECK(std::strcmp(shown.key, "resolution") == 0 && std::strcmp(shown.text, "50% (960x540)") == 0);
+    bridge_to(ur::DLSS);
+    CHECK(menu_setting(1, &shown) == 1 && shown.value == 5);
+    CHECK(std::strcmp(shown.text, "Balanced 58% (1120x630)") == 0);
+    bridge_to(ur::GAME);
     set_row(rows[1], 0, -1);
     CHECK(opts.resolution == 3);  // Left from the shown 50% is 67%, not the hidden 58%.
     bridge_to(ur::DLSS);
@@ -220,6 +234,24 @@ int main(int argc, char** argv) {
         bridge_to(ur::DLSS);
         CHECK(opts.dlss_model == model && opts.resolution == 5);
     }
+    // Auto is a sentinel, not a percentage: every engine keeps it through snapping, saving and loading.
+    // Native's separate full-size override is unchanged; it does not turn the stored 0 into a scale.
+    for (int engine = 0; engine < ur::kUpscalers; ++engine) {
+        fresh(engine, 0);
+        CHECK(resolution_auto() && resolution_scale() == 0 && ur::snap_render(engine, 0) == 0);
+        save();
+        restart();
+        CHECK(opts.resolution == 0 && resolution_auto() && resolution_scale() == 0);
+    }
+    // An environment-held Auto must not become a saved scale when only the engine changes.
+    fresh(ur::DLSS, 5);
+    env_override(&opts.resolution, 0);
+    bridge_to(ur::GAME);
+    CHECK(resolution_auto() && resolution_scale() == 0 && saved_value(&opts.resolution) == 5);
+    restart();
+    CHECK(opts.dlss == ur::GAME && opts.resolution == 5 && !resolution_auto());
+    bridge_to(ur::DLSS);
+    CHECK(opts.resolution == 5 && resolution_scale() == 5833);
     std::printf("upscaler round trip: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
@@ -245,7 +277,8 @@ def fixture(source):
     for marker, name in (("INI_KEY", "const char* ini_key"), ("SAVE", "void save"),
                          ("STOPS", "bool stops_at_ends"), ("PRESET", "void apply_preset"),
                          ("SET_ROW", "void set_row"), ("BRIDGE", "int menu_setting_set"),
-                         ("RESOLUTION_SCALE", "int resolution_scale")):
+                         ("RESOLUTION_SCALE", "int resolution_scale"), ("RESOLUTION_AUTO", "bool resolution_auto"),
+                         ("BRIDGE_FILL", "void bridge_fill"), ("GET", "int menu_setting")):
         replacements[marker] = definition(menu, name)
     for marker, label in (("UPSCALER_ROW", "Upscaler"), ("RESOLUTION_ROW", "Render resolution"),
                           ("MODEL_ROW", "DLSS model"), ("PRESET_ROW", "Quality preset")):
