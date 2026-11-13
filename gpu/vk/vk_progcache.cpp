@@ -35,6 +35,7 @@
 
 #include "shader_recompiler/shader_info.h"
 #include "hookshot_env.h"
+#include "fallback_loaded.h"
 #include "fallback_size_policy.h"
 #include "vk_paths.h"
 #include "vk_internal.h"
@@ -809,6 +810,16 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
         auto& variants = programs[work[i].first];
         for (auto& p : made[i]) variants.push_back(std::move(p));
         for (auto& p : variants) n++, fn(*p);
+    }
+    // (and the mesh fallback programs in memory already, whose records an earlier read took: the state lists' programs in the
+    // start that prepared the shaders. They had no compute pipelines until their first draw, which was left out: fallback_loaded.h)
+    static const bool loaded_too = fallback_loaded::on(getenv("RX_VK_FALLBACK_LOADED"));
+    if (fallbacks && loaded_too) {
+        std::unordered_set<uint64_t> given;
+        for (const auto& w : work) given.insert(w.first);
+        const size_t loaded = fallback_loaded::each(programs, given, fn);
+        if (loaded) logf("vk: %zu mesh fallback programs read in earlier in this start are made ready with the rest", loaded);
+        n += loaded;
     }
     return n;
 }

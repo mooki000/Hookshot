@@ -90,10 +90,12 @@ publish() {   # tag -> its release published
     # (a version's release only: nightly and rc are rolling prereleases, never "latest", and are not published here)
     [[ $tag =~ ^v[0-9] ]] || fail "$tag is not a version's tag: only a version's release is published here"
     id=$(id_of "$tag")
+    # (tag_name with every change of a release: a draft changed without it loses its tag for an "untagged-..." one, as
+    # v2.2.0-rc.1's did when its notes were written, and publishing that would have tagged the commit so)
     if [[ $tag == *-* ]]; then
-        jq -n '{draft: false, prerelease: true, make_latest: "false"}'
+        jq -n --arg t "$tag" '{tag_name: $t, draft: false, prerelease: true, make_latest: "false"}'
     else
-        jq -n '{draft: false, prerelease: false, make_latest: "true"}'
+        jq -n --arg t "$tag" '{tag_name: $t, draft: false, prerelease: false, make_latest: "true"}'
     fi | gh api -X PATCH "repos/$GH_REPO/releases/$id" --input - --jq '"\(.tag_name) (\(.id)) published: \(.html_url)"'
 }
 
@@ -175,7 +177,9 @@ finish() {
         if [[ -n $body ]]; then printf '%s\n' "$body"; fi
         if [[ $body != *"$MARK"* ]]; then printf '\n'; table "$tag"; fi
     } >"$dir/notes.md"
-    jq -n --rawfile body "$dir/notes.md" '{body: $body}' |
+    # (with its tag_name: a draft whose notes are changed without it comes back with an "untagged-..." tag, and is then
+    # no longer found by its tag: publish, above)
+    jq -n --arg t "$tag" --rawfile body "$dir/notes.md" '{tag_name: $t, body: $body}' |
         gh api -X PATCH "repos/$GH_REPO/releases/$id" --input - >/dev/null
     for i in 1 2 3 4 5; do
         sums "$id" >"$dir/SHA256SUMS"

@@ -52,6 +52,8 @@ int saves = 0;
 void save() { ++saves; }
 void apply_pad_layout(int) {}
 void sync_preset_budgets(int) {}
+constexpr int kAutoPreset = 6;   /* (the Quality preset Auto (this PC): apply_auto, not reached here) */
+void apply_auto(bool) {}
 void env_release(const int*) {}   // (the environment's hold on a row: none here)
 void vram_budget_sync() {}
 constexpr int kVramMinimumOnly = 1;

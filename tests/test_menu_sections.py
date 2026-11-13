@@ -21,7 +21,7 @@ GRAPHICS = [
     ("Screen", ["Fullscreen", "V-Sync", "Window scaling filter", "Ultrawide menus"]),
     ("HDR", ["HDR", "HDR paper white", "HDR peak brightness", "HDR contrast", "HDR tone mapper"]),
     ("Detail", ["Anisotropic filtering"]),
-    ("GPU and memory", ["GPU device", "VRAM budget", "Mesh shaders"]),
+    ("GPU and memory", ["GPU device", "VRAM budget"]),
 ]
 
 

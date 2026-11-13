@@ -424,13 +424,15 @@ void module_ids_on() {
     if (!off) ids_on.store(true, std::memory_order_release);
 }
 
-void programs_frames_note(long long left_out, double pipeline_wait_ms) {
-    if (!programs_load_at_create() || !load_default::too_rough(left_out, pipeline_wait_ms) || wait_marked.exchange(true)) return;
-    const bool wrote = load_default::marker_write_rough(load_fallback_path(), left_out, pipeline_wait_ms);
-    logf("vk: %lld draws and dispatches were left out in this session because their pipelines were not ready, and the game "
-         "waited %.0f ms for shaders or pipelines: over %lld or %.0f ms, so the next start loads every listed program before "
-         "the title again%s", left_out, pipeline_wait_ms, load_default::kLeftOutMost, load_default::kPipelineWaitMs,
-         wrote ? " (hookshot_load_start.txt)" : "; the marker did not write");
+void programs_frames_note() {
+    if (!programs_load_at_create()) return;
+    // (what the loads at create calls asked of the caches and no cache had: load_work counts them)
+    const long long lacked = census.load_pipes_cold.load(std::memory_order_relaxed) + census.load_computes_cold.load(std::memory_order_relaxed);
+    if (!load_default::caches_lacked(lacked) || wait_marked.exchange(true)) return;
+    const bool wrote = load_default::marker_write_lacked(load_fallback_path(), lacked);
+    logf("vk: %lld listed pipelines were in no cache when their programs were loaded in this session (over %lld): they are "
+         "compiled in play, so the next start loads every listed program before the title again%s", lacked,
+         load_default::kNotInCacheMost, wrote ? " (hookshot_load_start.txt)" : "; the marker did not write");
 }
 
 void programs_load_wait(uint64_t key) {

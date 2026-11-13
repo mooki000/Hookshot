@@ -37,8 +37,15 @@ def check_source():
         if leave not in body[:body.index("fread(")]:
             raise SystemExit("a compressed record could be read by its parts' places: " + head.split("(")[0])
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
-    if "programs_frames_note(pskip, pwait_ms);" not in replay or "load_default::too_rough(left_out, pipeline_wait_ms)" not in progs:
-        raise SystemExit("draws left out and pipeline waits do not reach the safety net")
+    note = progs[progs.index("void programs_frames_note() {"):]
+    note = note[:note.index("\n}\n")]
+    if "programs_frames_note();" not in replay or "load_default::caches_lacked(lacked)" not in note or \
+            "census.load_pipes_cold" not in note or "census.load_computes_cold" not in note:
+        raise SystemExit("what the loads found in no cache does not reach the safety net")
+    # (draws left out and pipeline waits are not this mode's alone: a state no list names is left out in start mode too)
+    for other in ("pskip", "pwait", "left_out", "pending_skips"):
+        if other in note:
+            raise SystemExit("the safety net counts draws left out again, which a healthy session has in either mode: " + other)
     if "load_default::choose(getenv(\"RX_VK_LOAD\")" not in progs or "load_default::too_slow(" not in progs:
         raise SystemExit("vk_programs.cpp does not use load_default.h's rule")
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")

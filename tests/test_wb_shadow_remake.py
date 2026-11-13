@@ -249,8 +249,9 @@ int main() {
         src = Path(tmp) / 'remake.cpp'
         exe = Path(tmp) / 'remake.exe'
         src.write_text(fixture, encoding='utf-8')
-        subprocess.run([args.cxx, '-std=c++20', '-O1', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT), str(src), '-o', str(exe)],
-                       check=True)
+        # (-D_CRT_SECURE_NO_WARNINGS: with MSVC's headers getenv is deprecated, an error under -Werror; as the other fixtures)
+        subprocess.run([args.cxx, '-std=c++20', '-O1', '-Wall', '-Wextra', '-Werror', '-D_CRT_SECURE_NO_WARNINGS',
+                        '-I', str(ROOT), str(src), '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 

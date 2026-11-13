@@ -60,13 +60,13 @@ def main():
         fail("Fg: no count of refused sets in a row")
 
     frames = function(src, "int dlss_fg_frames(")
-    started = frames.index("if (!fg_start(g) || count < 1) return 0;")
+    started = frames.index("if (!fg_start(g) || count < 1) return skip(dlss_why() != DLSS_OK ? FG_SKIP_DEVICE : FG_SKIP_START);")
     given_up = frames.find("if (g.refusals >= kFgRefusalsOff) {")
     create = frames.index("NGX_VK_CREATE_DLSSG(")
     if not started < given_up < create:
         fail("dlss_fg_frames: a set after frame generation was given up still goes to NGX")
     guard = frames[given_up:frames.index("}", given_up)]
-    if "if (g.feature) fg_release(g);" not in guard or "return g.refused++, 0;" not in frames[given_up:given_up + 300]:
+    if "if (g.feature) fg_release(g);" not in guard or "return g.refused++, skip(FG_SKIP_REFUSED);" not in frames[given_up:given_up + 300]:
         fail("dlss_fg_frames: after giving up, the refused sets' feature is not let go (held for the rest of the run)")
     refused = frames.index("was refused (%#x)")
     off_at = frames.find("if (++g.refusals == kFgRefusalsOff) {", refused)
@@ -76,8 +76,22 @@ def main():
     if not refused < loop_end < frames.index("g.made++;"):
         fail("dlss_fg_frames: a set made does not count the refusals again from 0")
     if not re.search(r"static bool told = false;.*?made frames asked, but its runtime makes %u at most"
-                     r".*?return g\.too_many\+\+, 0;", frames, re.S):
+                     r".*?return g\.too_many\+\+, skip\(FG_SKIP_TOO_MANY\);", frames, re.S):
         fail("dlss_fg_frames: more frames asked than its runtime makes is not said (once)")
+
+    # (the Insert menu's Frame generation by row says why DLSS-G did not make the frames: each set it does not make names its
+    # reason, one it makes clears it, and one with nothing to blend from leaves it, dlss_fg_skip)
+    for line, why in (("if (!fg_possible()) return ", "FG_SKIP_OFF"), ("if (g.inputs == g.used || !g.rw) return ", "FG_SKIP_INPUTS")):
+        at = frames.find(line)
+        if at < 0 or ("skip(%s)" % why) not in frames[at:frames.index("\n", at)]:
+            fail("dlss_fg_frames: a set not made for %s does not say so (dlss_fg_skip)" % why)
+    if "if (!blend) return g.not_blended++, 0;" not in frames:
+        fail("dlss_fg_frames: a set with nothing to blend from (a loading hitch) changes the reason the menu shows")
+    if not re.search(r"g\.made\+\+;.*?skip\(FG_SKIP_NONE\);\s*return count;", frames, re.S):
+        fail("dlss_fg_frames: a set DLSS-G made does not clear the reason the menu shows")
+    skip_at = function(src, "int dlss_fg_skip(unsigned* most) {")
+    if "fg_skip.load(" not in skip_at or "fg_skip_most.load(" not in skip_at:
+        fail("dlss_fg_skip: does not give the last set's reason and its runtime's most")
 
     start = function(src, "bool fg_start(Fg& g) {")
     if "runtime_dirs(game_dir())" not in start or "kFgRuntimeName" not in start or "the driver's own" not in start:

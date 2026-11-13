@@ -31,11 +31,15 @@ int main(int argc, char** argv) {
     using load_default::too_slow;
     CHECK(!too_slow(6.7, 24.4) && !too_slow(2.0, 10.8) && !too_slow(100.0, 500.0));
     CHECK(too_slow(713, 3089) && too_slow(884, 2557) && too_slow(100.1, 101) && too_slow(40, 500.1));
-    // the second part: draws left out for a pipeline that was not ready, and waits for pipelines. The clean tours had none;
-    // the first session whose loads found no cache had 46,026 and 3.5 s; a few hundred is an area no list covers
-    using load_default::too_rough;
-    CHECK(!too_rough(0, 0.0) && !too_rough(14, 0.0) && !too_rough(273, 50.6) && !too_rough(2000, 1000.0));
-    CHECK(too_rough(46026, 3519.0) && too_rough(2001, 0.0) && too_rough(0, 1000.1));
+    // the second part: listed pipelines the loads found in no cache. The clean tours had none (39 at most without mesh
+    // shaders); the two sessions of the folder whose caches did not answer had 4,189 and 5,384
+    using load_default::caches_lacked;
+    CHECK(!caches_lacked(0) && !caches_lacked(39) && !caches_lacked(500));
+    CHECK(caches_lacked(501) && caches_lacked(3720 + 469) && caches_lacked(4718 + 666));
+    // a healthy session's draws left out for pipelines no list names (1,906, and 353 ms of waits, in eight minutes of a new
+    // game's opening; the same in start mode) are no input of the rule at all: with 0 listed pipelines missing it does not trip,
+    // however long the session
+    CHECK(!caches_lacked(0));
     // the marker: not there, written, there; its text says how to take it away
     const std::string path = std::string(argv[1]) + "/hookshot_load_start.txt";
     CHECK(!load_default::marker_there(path));
@@ -47,7 +51,7 @@ int main(int argc, char** argv) {
     CHECK(std::strstr(text, "2557 ms") && std::strstr(text, "884 ms") && std::strstr(text, "Delete this file"));
     CHECK(!load_default::marker_write(std::string(argv[1]) + "/no-such-folder/x.txt", 1, 1));
     CHECK(std::remove(path.c_str()) == 0 && !load_default::marker_there(path));
-    CHECK(load_default::marker_write_rough(path, 46026, 3519.0) && load_default::marker_there(path));
+    CHECK(load_default::marker_write_lacked(path, 4189) && load_default::marker_there(path));
     CHECK(std::remove(path.c_str()) == 0);
     std::printf("load_default: ok\n");
     return 0;

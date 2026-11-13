@@ -61,7 +61,10 @@ cp scripts/ngx_sdk.py "$T/scripts/"
 cp -a gpu/vk gpu/compat gpu/third_party "$T/gpu/"
 cp -a third_party/imgui third_party/zstd third_party/fonts "$T/third_party/"
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
-cp -a third_party/zbic/zbic.so third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
+# (the whole folder, not only its prebuilt helper: with DLSS ticked the builder drops HOOKSHOT_VK_PREBUILT, so nx2/build.py
+# compiles the back end from the sources inside the read-only image and reads third_party/zbic's zstd.c, zstd.h and
+# zstd_errors.h for its vk_zstd.o; shipping only zbic.so stopped those builds at FileNotFoundError on third_party/zbic/zstd.h)
+cp -a third_party/zbic "$T/third_party/"
 cp -a third_party/a64-kit/* "$T/third_party/a64-kit/"
 rm -f "$T/third_party/a64-kit/tools/lld-link.exe"
 if [ -d work ]; then

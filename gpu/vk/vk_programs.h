@@ -25,9 +25,9 @@ bool programs_load_at_create();
 /// (vk_main.cpp, once the device is up) RX_VK_LOAD or the default decided. native_mesh: the GPU draws mesh programs itself, so
 /// a start keeps no mesh fallback programs ready
 void programs_load_decide(bool native_mesh);
-/// (the replay thread, with each frame line) the session's draws and dispatches left out for a pipeline that was not ready, and
-/// its waits for shaders or pipelines, so far: the safety net's second part (load_default.h too_rough)
-void programs_frames_note(long long left_out, double pipeline_wait_ms);
+/// (the replay thread, with each frame line) the safety net's second part: the listed pipelines this session's loads found in
+/// no cache (load_default.h caches_lacked). Draws left out for pipelines no list names are not this mode's and not counted
+void programs_frames_note();
 /// (precompile_run, before play) what a create call looks its program up in: every note by its place, and the compute
 /// programs the lists name
 void programs_index(std::vector<NoteRef> notes, const std::unordered_set<uint64_t>& compute_keys);

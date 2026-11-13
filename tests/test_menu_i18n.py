@@ -1,6 +1,6 @@
 """gpu/vk/menu_i18n.h, the Insert menu's translations: every table's texts are the menu's own (vk_menu.cpp writes each
 English text), every translation keeps its text's printf conversions in order and its leading and trailing spaces (the menu
-joins pieces), and the language list holds what vk_menu_i18n.cpp expects. The controls and Automatic mesh/prompt hints
+joins pieces), and the language list holds what vk_menu_i18n.cpp expects. The controls and Automatic prompt hints
 must remain present in every translated table. No game, no compiler.
 
 Run with: python -I tests/test_menu_i18n.py
@@ -60,10 +60,6 @@ class MenuI18nTests(unittest.TestCase):
             "controls": (
                 "Gamepad: the D-pad moves, A binds, B goes back. Ocarina note keys are only notes while "
                 "the ocarina waits for one; away from it they do their other jobs."
-            ),
-            "automatic mesh shaders": (
-                "The GPU's own mesh shaders where it has them, the compute path where it has not (on Linux "
-                "AMD always the compute path: RADV's mesh shaders stop the GPU, issue 2245)."
             ),
             "automatic button prompts": (
                 "Those of the first controller, from its name (SDL's). With none, the keyboard's (the Switch's with XInput "
