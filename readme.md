@@ -325,7 +325,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 
 | Tab | Option | Choices | Default |
 |---|---|---|---|
-| Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
+| Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+), Auto (this PC) | Auto (this PC) on a first start; Custom in an options file from before it |
 | | Aspect ratio | The shapes your screen's resolutions have, narrowest first (5:4, 4:3, 16:10, 16:9, 21:9, 32:9, ...), your monitor's own marked "(monitor's)" (after a restart) | Your monitor's |
 | | Output resolution | The Aspect ratio's sizes: your screen's resolutions and the common ones (1440p, 4K, 5K at 16:9; 1920x1200, 2560x1600 at 16:10; 3440x1440 at 21:9; ...), and 2048x1152 (the game's own) at 16:9 (after a restart) | 2048x1152 |
 | | Profile | Docked, Handheld (after a restart) | Docked |
@@ -393,6 +393,14 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as
   you chose them: with DLSS, FSR 3.1 or FSR 4, the preset's resolution becomes their nearest mode. Changing most other
   rows yourself sets it back to Custom.
+- **Auto (this PC)**, which a first start begins on, chooses for the PC it runs on: the memory tier from the card's
+  video memory (an integrated GPU, a Steam Deck or a card without mesh shaders at Minimum), DLSS on an NVIDIA RTX card
+  or FSR 4 on an AMD RX 9000 where the build has them (else the game's own upscaler), and the screen's size as the
+  Output resolution where the tier has the memory for it. In the first minute of play it then measures the GPU: while
+  frames are missed with the GPU over 90% busy it lowers the Render resolution a step, and while the frame rate cap holds
+  with the GPU under half busy it raises it a step, up to the best mode that still upscales (DLSS or FSR Quality, or 100%
+  with the game's own; never DLAA or native AA). At most two steps; a PC that holds its cap keeps its picture. It chooses again when the card or the screen changes. `hookshot_log.txt`'s
+  `Auto (this PC)` lines say what it chose and why.
 - **Menu size** is how large the menu, the FPS counter and the start-up screen are drawn: Medium unless you choose Small
   (a desk) or Large (a TV across the room). It stays the same whether you use a controller or the keyboard and mouse.
 - **Field of view** changes the gameplay camera's vertical angle: 100% keeps the game's view, higher shows more of the

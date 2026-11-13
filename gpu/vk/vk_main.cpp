@@ -13,6 +13,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#ifndef _WIN32
+#include <unistd.h>   // (sysconf: the RAM, auto_profile)
+#endif
 
 #include "vk_api.h"
 #include "vk_draw.h"
@@ -22,6 +25,7 @@
 static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCompute == VK_QUEUE_COMPUTE_BIT);
 #include "gpu_choice.h"
 #include "vk_menu.h"
+#include "auto_settings.h"
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
@@ -74,6 +78,8 @@ void load_device(VkDevice device) {
 } // namespace vkx
 
 namespace mkwvk {
+
+int display_refresh_mhz();   // (below, outside the unnamed namespace)
 
 std::vector<std::string> gpu_device_names;
 const MkwVkHost* host;
@@ -239,7 +245,6 @@ bool pick_device() {
     dev.physical = all[best];
     vkGetPhysicalDeviceProperties(dev.physical, &dev.props);
     vkGetPhysicalDeviceMemoryProperties(dev.physical, &dev.memory);
-    menu_first_start_for_gpu(dev.props, dev.memory);   // (no options yet: the preset for this card's memory)
     return true;
 }
 
@@ -292,6 +297,14 @@ bool create_device() {
     // only full Compute is stable there, and the reports span Navi 2x (RX 6800, RX 6600 XT) and the RDNA3 APUs (Steam
     // Deck OLED, Rog Xbox Ally X). On Linux, where AMD's Vulkan driver is RADV, Automatic picks Compute; Native stays
     // a choice (RX_VK_MESH_SHADERS=native). RDNA1 and older have no mesh shaders on RADV: for them a no-op.
+    // (the card's own, before the mode below: whether it has task and mesh shaders, for the Quality preset Auto (this PC), which
+    // must not put a card that has them on Minimum because this run uses Compute)
+    if (has_extension(exts, VK_EXT_MESH_SHADER_EXTENSION_NAME)) {
+        VkPhysicalDeviceMeshShaderFeaturesEXT m{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &m};
+        vkGetPhysicalDeviceFeatures2(dev.physical, &f2);
+        dev.mesh_capable = m.meshShader && m.taskShader;
+    }
     int mesh_mode_used = mesh_mode;
 #ifndef _WIN32
     if (mesh_mode_used == 0 && dev.props.vendorID == 0x1002) mesh_mode_used = 2;   // (Linux AMD is RADV)
@@ -1411,8 +1424,55 @@ bool open_window_surface(bool log_failure) {
     return true;
 }
 
+/// (hookshot) What this PC reports about itself, for the Quality preset Auto (this PC) (auto_settings.h, vk_menu.cpp
+/// menu_auto_for_gpu): once, when the window is known (its screen's size and refresh), the card already chosen
+void auto_profile() {
+    static bool done;
+    if (done) return;
+    done = true;
+    ::auto_settings::Hardware hw;
+    const VkPhysicalDeviceProperties& p = dev.props;
+    hw.vendor = p.vendorID == 0x10de ? ::auto_settings::NVIDIA : p.vendorID == 0x1002 ? ::auto_settings::AMD
+              : p.vendorID == 0x8086 ? ::auto_settings::INTEL : ::auto_settings::OTHER;
+    hw.integrated = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    for (uint32_t i = 0; i < dev.memory.memoryHeapCount; i++)
+        if (dev.memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            hw.vram_mb = std::max<uint32_t>(hw.vram_mb, (uint32_t)(dev.memory.memoryHeaps[i].size >> 20));
+    hw.mesh_native = dev.mesh_capable;   // (the card's, not this run's mode: Linux AMD's Automatic is Compute, #2245)
+    hw.mesh_as_compute = dev.mesh_capable && !dev.mesh_shader;
+    hw.rtx = hw.vendor == ::auto_settings::NVIDIA && strstr(p.deviceName, "RTX");
+    // (RDNA 4: "AMD Radeon RX 9070 XT", RADV's "(RADV GFX1201)")
+    hw.rdna4 = hw.vendor == ::auto_settings::AMD && (strstr(p.deviceName, "RX 9") || strstr(p.deviceName, "GFX12"));
+    // (the Steam Deck's APU, LCD and OLED, or SteamOS's own flag)
+    const char* deck = getenv("SteamDeck");
+    hw.handheld = (deck && atoi(deck) == 1) || strstr(p.deviceName, "Custom GPU 0405") || strstr(p.deviceName, "Custom GPU 0932");
+    hw.dlss_built = dlss_built();
+    hw.fsr4_built = fsr4_built();
+    hw.threads = (int)std::thread::hardware_concurrency();
+#ifdef _WIN32
+    MEMORYSTATUSEX m{};
+    m.dwLength = sizeof m;
+    if (GlobalMemoryStatusEx(&m)) hw.ram_mb = (uint32_t)(m.ullTotalPhys >> 20);
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof mi;
+    DEVMODEW dm{};
+    dm.dmSize = sizeof dm;
+    if (main_window && GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTOPRIMARY), &mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+        hw.screen_w = (int)dm.dmPelsWidth, hw.screen_h = (int)dm.dmPelsHeight;
+#else
+    const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && page > 0) hw.ram_mb = (uint32_t)(((uint64_t)pages * (uint64_t)page) >> 20);
+    const MkwVkWindow* w = (const MkwVkWindow*)main_window;
+    if (w && w->version >= 3 && w->desktop_size) w->desktop_size(w->window, &hw.screen_w, &hw.screen_h);
+#endif
+    hw.refresh_hz = (display_refresh_mhz() + 500) / 1000;
+    menu_auto_for_gpu(p, hw);
+}
+
 int start(void* hwnd) {
     main_window = (HWND)hwnd;
+    auto_profile();   // (the Quality preset Auto (this PC): before the game first asks its mode, which reads the options)
     if (!hwnd) {   // (HOS_HEADLESS: no window; the frames are rendered all the same, RX_VK_SHOTS writes them out)
         dev.offscreen = true;
         dev.swap_extent = {1920, 1080};

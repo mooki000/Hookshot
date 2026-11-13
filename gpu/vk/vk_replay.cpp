@@ -3187,6 +3187,7 @@ void log_frame_stats() {
         {   // (issue 109: the movie networks too slow on this card: left out from now on, vk_draw.cpp movie_networks_slow)
             static const bool keep_all = getenv("RX_VK_NETWORK_KEEP") && !strcmp(getenv("RX_VK_NETWORK_KEEP"), "all");
             const double gpu_ms = (st_gpu_ns - l_gpu) / 120.0 / 1e6, draws = (d - l_d) / 120.0;
+            menu_auto_tune(gpu_ms, draws, 120.0 / secs);   // (the Quality preset Auto (this PC): measured in play)
             if (!keep_all && gpu_ms > 40.0 && draws < 40.0 && !movie_networks_slow.exchange(true))
                 logf("vk: %.0f ms of GPU time a frame for %.0f draws (a movie): its upscaler networks are left out from now on "
                      "(a linear upscale; RX_VK_NETWORK_KEEP=all keeps them)", gpu_ms, draws);

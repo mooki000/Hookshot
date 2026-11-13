@@ -1,5 +1,6 @@
 // The Insert menu (vk_menu.cpp): options that apply while the game runs, kept in hookshot_options.ini beside the executable.
 #pragma once
+#include "auto_settings.h"
 
 #include "vk_internal.h"
 
@@ -80,7 +81,8 @@ struct Options {
     int sampler_cache = 0;     // sampler ids answer their parameters without the registrations' lock (gpu/vk/vk_draw.cpp; RX_VK_SAMPLER_CACHE)
     int astc_rgba8 = 0;   // (hookshot) big ASTC textures kept as decoded RGBA8, not re-encoded to BC3 (gpu/vk/vk_texture.cpp bc_ready;
                           // RX_VK_ASTC_RGBA8 over it): the AMD texture workaround. Read once, at the start
-    int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+)
+    int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+),
+                          // 6 Auto (this PC), kAutoPreset (its tier's budgets: budget)
     int vram_mb = 0;      // dynamic texture cache budget limit in MB
     int mirror_mb = 0;    // staging mirror limit in MB
     int budget = 0;       // the preset whose memory budgets (vram_mb, mirror_mb) hold: kept when another row turns the preset
@@ -100,13 +102,15 @@ struct Options {
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
 };
 extern Options opts;
+constexpr int kAutoPreset = 6;   // (the Quality preset Auto (this PC): menu_auto_for_gpu, auto_settings.h)
 /// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
 /// video memory than the preset is for. A 4GB preset on an 8 GB card kept 256 MB of mirrors and 2.2 GB of textures: the
 /// game's memory was read over PCIe and the textures made again every frame, 5 fps with the CPU idle (Discord, 11-08)
 bool preset_caps_memory();
 
 void menu_init();             // (the options from the file, once)
-void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkPhysicalDeviceMemoryProperties& mem);   // (no options file: the preset for the card)
+void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings::Hardware hw);   // (the card chosen: Auto's profile)
+void menu_auto_tune(double gpu_ms, double draws, double fps);   // (the replay's 120-present windows: Auto (this PC) measured in play)
 /// (hookshot) The V-Sync row as this run applies it: RX_VK_FIFO=1 is On and RX_VK_IMMEDIATE=1 Off, whatever the row says
 /// (for the run only: the row keeps the player's choice). 0 Auto, 1 On, 2 Off
 int menu_vsync();

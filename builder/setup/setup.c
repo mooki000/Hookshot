@@ -403,12 +403,24 @@ static int copy_part_tree(const wchar_t *from, const wchar_t *to) {
     return ok;
 }
 
+/* A folder tar.exe has just written can stay open a few seconds in an antivirus scan or the search indexer: MoveFileW then fails
+   with access denied or a sharing violation. Those are tried again for up to 20 s, any other error is returned at once.
+   On failure GetLastError is the last try's. */
+static BOOL move_retry(const wchar_t *from, const wchar_t *to) {
+    for (int tries = 1;; tries++) {
+        if (MoveFileW(from, to)) return TRUE;
+        const DWORD error = GetLastError();
+        if ((error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION) || tries == 80) return FALSE;
+        Sleep(250);
+    }
+}
+
 static int publish_install(const wchar_t *staged, const wchar_t *final, int portable) {
-    if (!portable || GetFileAttributesW(final) == INVALID_FILE_ATTRIBUTES) return MoveFileW(staged, final) != 0;
+    if (!portable || GetFileAttributesW(final) == INVALID_FILE_ATTRIBUTES) return move_retry(staged, final) != 0;
     wchar_t backup[MAX_PATH];
     const int n = home_path(backup, L"%ls.rollback-%lu-%llu", final, GetCurrentProcessId(), GetTickCount64());
     if (n < 0 || n >= MAX_PATH || !MoveFileW(final, backup)) return 0;
-    if (!MoveFileW(staged, final)) {
+    if (!move_retry(staged, final)) {
         const DWORD error = GetLastError();
         /* If restoration is prevented externally, the complete old installation remains in .rollback-* for recovery. */
         MoveFileW(backup, final);
@@ -862,8 +874,14 @@ static DWORD WINAPI work(LPVOID unused) {
                 w(p->from, wf, 260), w(p->to, wt, 260);
                 home_path(from, L"%ls\\%ls", dest, wf);
                 home_path(to, L"%ls\\%ls", dest, wt);
-                if (GetFileAttributesW(to) == INVALID_FILE_ATTRIBUTES && !MoveFileW(from, to))
-                    fail(L"Could not set up part %d of %d (renaming %ls).", i + 1, nparts, wf);
+                if (GetFileAttributesW(to) == INVALID_FILE_ATTRIBUTES && !move_retry(from, to)) {
+                    const DWORD e = GetLastError();
+                    if (e == ERROR_ACCESS_DENIED || e == ERROR_SHARING_VIOLATION)
+                        fail(L"Could not set up part %d of %d (renaming %ls, Windows error %lu). Another program is holding the files just unpacked, "
+                             L"often an antivirus scan: run the setup again, and if it happens again allow the folder %ls in it.",
+                             i + 1, nparts, wf, e, g_home.root);
+                    fail(L"Could not set up part %d of %d (renaming %ls, Windows error %lu).", i + 1, nparts, wf, e);
+                }
             }
         }
         wchar_t staged_exe[MAX_PATH];
@@ -872,7 +890,7 @@ static DWORD WINAPI work(LPVOID unused) {
         if (!builder_ready(staged_exe))
             fail(L"The Builder or its self-contained .NET runtime is incomplete after unpacking (%ls). Your antivirus may have quarantined files from %ls. Check its quarantine/history, then run the setup again. No complete installation was published.", staged_exe, install);
         if (!publish_install(install, final_dir, g_home.portable))
-            fail(L"Could not finish installing into %ls. A preserved repair backup, if restoration was blocked, is beside it as .rollback-*.", final_dir);
+            fail(L"Could not finish installing into %ls (Windows error %lu). A preserved repair backup, if restoration was blocked, is beside it as .rollback-*.", final_dir, GetLastError());
         wcscpy(install, final_dir);
         write_small(marker, tag);
         write_parts(install, parts, nparts);

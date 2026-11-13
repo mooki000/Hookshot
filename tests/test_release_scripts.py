@@ -186,6 +186,10 @@ elif p == ["releases"] and method == "POST":
 elif len(p) == 2 and p[0] == "releases" and method == "PATCH":
     r = release(p[1])
     change = json.loads(data)
+    # (as GitHub does: a draft changed without its tag_name comes back with an "untagged-..." one. v2.2.0-rc.1's draft
+    # lost its tag so when its notes were written, and was then not found by its tag for the publish)
+    if r["draft"] and "tag_name" not in change:
+        r["tag_name"] = "untagged-%s" % p[1]
     r.update(change)
     if change.get("draft") is False and not r.get("published_at"):
         r["published_at"] = "now"

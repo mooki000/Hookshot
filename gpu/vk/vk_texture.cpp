@@ -291,6 +291,27 @@ bool compact_on() {   // (hookshot: the textures in a pool of their own, compact
     static const bool v = vram_compact::enabled(getenv("RX_VK_COMPACT"));
     return v;
 }
+// (hookshot) the commit the textures leave free for the rest of the system: texture_frame's commit rule. RX_VK_COMMIT_RESERVE_MB
+// (default 2560, 0: off). Windows only: Linux overcommits, and its limit is not one commit can reach
+static uint64_t commit_reserve() {
+    static const uint64_t v = getenv("RX_VK_COMMIT_RESERVE_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_COMMIT_RESERVE_MB"))) << 20
+                                                                : 2560ull << 20;
+    return v;
+}
+// (what Windows lets the process commit before its limit, RAM plus the page file: GlobalMemoryStatusEx's ullAvailPageFile, the
+// limit less the whole system's commit. false where it cannot be read)
+static bool commit_headroom(uint64_t* free_bytes) {
+#if defined(_WIN32)
+    MEMORYSTATUSEX m{};
+    m.dwLength = sizeof m;
+    if (!GlobalMemoryStatusEx(&m)) return false;
+    *free_bytes = m.ullAvailPageFile;
+    return true;
+#else
+    (void)free_bytes;
+    return false;
+#endif
+}
 uint64_t pool_cap() {
     static const uint64_t mb = getenv("RX_VK_TARGET_POOL_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_TARGET_POOL_MB"))) : 256;
     return mb << 20;
@@ -1903,7 +1924,8 @@ bool low_vram_texture_mips() {
         uint64_t used = 0, allowed = 0;
         return vram_usage(&used, &allowed) && allowed && allowed <= (4ull << 30) + (512ull << 20);
     }();
-    return !disabled && small && opts.preset == 1;
+    // (Minimum, or Auto (this PC) at Minimum's tier: its budgets, opts.budget 1)
+    return !disabled && small && (opts.preset == 1 || (opts.preset == kAutoPreset && opts.budget == 1));
 }
 
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb, bool as_target) {
@@ -4334,6 +4356,29 @@ void texture_frame(uint64_t completed) {
         const uint64_t over = used - allowed / 100 * 97;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
         rule_budget = std::min(rule_budget, total_bytes > over ? total_bytes - over : 0);
+    }
+    // (hookshot) and Windows' commit limit (RAM plus the page file): every VRAM block is charged to the process's commit, as the
+    // guest's memory is. A run on an RTX 4060 Ti held private commit at the VRAM blocks plus ~21 GB the whole way (19.3 GB at the
+    // start, 35.4 GB in Hyrule Field with 13.3 GB of blocks); a 16 GB PC with a fixed 32 GB page file reached its 47.9 GB limit at
+    // 33.9 GB of its own, a guest commit failed while an area loaded, and the game's next write there crashed it. Below the reserve
+    // the shortfall comes off the textures' budget, as the driver's limit's excess does above; the eviction and the compaction
+    // then give blocks back. RX_VK_COMMIT_RESERVE_MB=<MB> (default 2560; 0: off)
+    {
+        uint64_t commit_free = 0;
+        const uint64_t reserve = commit_reserve();
+        if (reserve && commit_headroom(&commit_free) && commit_free < reserve) {
+            const uint64_t over = reserve - commit_free;
+            budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
+            rule_budget = std::min(rule_budget, total_bytes > over ? total_bytes - over : 0);
+            static uint64_t said_at;
+            if (!said_at || frame_no - said_at >= 600) {
+                said_at = frame_no;
+                logf("vk: commit limit near: %llu MB of commit left (reserve %llu MB); the textures' budget down to %llu MB of "
+                     "their %llu MB (RX_VK_COMMIT_RESERVE_MB)", (unsigned long long)(commit_free >> 20),
+                     (unsigned long long)(reserve >> 20), (unsigned long long)(budget >> 20),
+                     (unsigned long long)(total_bytes >> 20));
+            }
+        }
     }
     // (hookshot) the 90% rule and the driver's limit let go of their excess, not of an eighth of the cache: vram_compact.h.
     // RX_VK_EVICT_EXCESS=0: to 7/8 of their budget, as before

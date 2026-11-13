@@ -285,7 +285,7 @@ __attribute__((visibility("default"))) const MkwVkRenderer *mkwvk_init(const Mkw
 #ifndef _WIN32
 /* (linux) what start() is given in place of a window handle (host/posix/display_sdl.c): the window makes the
    surface (SDL_Vulkan_CreateSurface: X11 or Wayland) and says its size in pixels */
-#define MKWVK_WINDOW_VERSION 2
+#define MKWVK_WINDOW_VERSION 3
 typedef struct MkwVkWindow {
     uint32_t version;   /* MKWVK_WINDOW_VERSION */
     int (*create_surface)(void *window, void *instance, void *surface_out);   /* (VkInstance, VkSurfaceKHR *): 1 if made */
@@ -293,6 +293,8 @@ typedef struct MkwVkWindow {
     void *window;
     /* (version 2) the refresh rate of the display the window is on, in mHz; 0 when not known (frame generation's Auto) */
     int (*refresh_mhz)(void *window);
+    /* (version 3) the desktop's size in pixels, 0 x 0 when not known (the Quality preset Auto (this PC)) */
+    void (*desktop_size)(void *window, int *width, int *height);
 } MkwVkWindow;
 #endif
 
